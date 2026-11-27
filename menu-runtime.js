@@ -1,5 +1,5 @@
 import { BREAKPOINT } from './model.mjs';
-import { MENUS, menuNeedsGrid, menuView } from './menus.mjs';
+import { MENUS, menuNeedsGrid, menuRank, menuView } from './menus.mjs';
 
 const itemSelector = 'div[id],[data-i18n],.list-group-item,[data-extension-menu-id],button,a,[role="menuitem"],[role="button"]';
 const iconSelector = '.extensionsMenuExtensionButton, .fa-solid, .fa-regular, [data-menu-icon]';
@@ -225,8 +225,7 @@ export function createMenuRuntime() {
                 if (grid && ordered) {
                     const group = groups.indexOf(raw.group);
                     const offset = group === 0 ? 80000 : group > 0 ? group * 3000 : 0;
-                    const order = offset + (raw.pinned ? 1 : 1000) + (raw.order ?? 1000 + index);
-                    rank = order;
+                    rank = menuRank(view, raw, index);
                     if (group >= 0 && !seen.has(raw.group)) {
                         seen.add(raw.group);
                         activeHeaders.add(headerFor(id, raw.group, group === 0 ? '更多' : view.groups[raw.group], content, offset));
@@ -257,7 +256,14 @@ export function createMenuRuntime() {
 
     return {
         items(id) {
-            return candidates(id).map(({ node, key }) => ({ key, label: labelOf(node) }));
+            return candidates(id).filter(({ node }) => !node.hidden && !node.classList.contains('displayNone') &&
+                (getComputedStyle(node).display !== 'none' || node.hasAttribute('data-tle-native-more')) &&
+                node.parentElement?.style.display !== 'none'
+            ).map(({ node, key }) => {
+                const icon = [...node.children].find(child => child.matches(iconSelector));
+                const classes = [...(icon?.classList ?? [])].filter(name => /^fa-[a-z\d-]+$/.test(name));
+                return { key, label: labelOf(node), icon: classes };
+            });
         },
         hit(target) {
             for (const [id, menu] of Object.entries(MENUS)) {

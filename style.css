@@ -1,59 +1,9 @@
-#tle-editor {
-    position: fixed;
-    z-index: 6000;
-    inset: 48px 12px auto auto;
-    width: min(450px, calc(100dvw - 24px));
-    max-height: calc(100dvh - 115px);
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 14px;
-    box-sizing: border-box;
-    color: var(--SmartThemeBodyColor, #eee);
-    background: color-mix(in srgb, var(--SmartThemeBlurTintColor, #202027) 60%, #202027);
-    border: 1px solid var(--SmartThemeBorderColor, #777);
-    border-radius: 12px;
-    box-shadow: 0 8px 30px #0009;
-    font-size: 14px;
-    line-height: 1.35;
-}
-
-#tle-editor h2 { margin: 0; font-size: 18px; }
-#tle-editor .tle-status { overflow-wrap: anywhere; }
-#tle-editor [data-dirty="true"] { color: #ffcb76; }
-#tle-editor .tle-body { overflow: auto; touch-action: pan-y; overscroll-behavior: contain; display: grid; gap: 8px; }
-#tle-editor .tle-actions { display: flex; flex-wrap: wrap; gap: 5px; }
-#tle-editor .menu_button { margin: 0; width: auto; white-space: normal; }
-#tle-editor button[aria-pressed="true"],
-#tle-editor .tle-primary { background: #365368; color: white; }
-#tle-editor .tle-field { display: grid; grid-template-columns: minmax(88px, 1fr) minmax(42px, 1fr) 62px auto; gap: 5px; align-items: center; }
-#tle-editor .tle-field:has([type="color"]),
-#tle-editor .tle-field:has(select) { grid-template-columns: minmax(90px, 1fr) minmax(0, 2fr) auto; }
-#tle-editor .tle-url { grid-template-columns: 1fr auto auto; }
+#tle-editor .tle-field { display: grid; grid-template-columns: minmax(80px, 1fr) minmax(42px, 1fr) 60px auto; align-items: center; gap: 6px; }
+#tle-editor .tle-field:has([type="color"], select, [type="text"]) { grid-template-columns: minmax(80px, 1fr) minmax(0, 2fr) auto; }
+#tle-editor .tle-field.tle-url { grid-template-columns: 1fr auto auto; }
 #tle-editor .tle-url label { grid-column: 1 / -1; }
-#tle-editor :is(input, select) { width: 100%; min-width: 0; box-sizing: border-box; margin: 0; }
-#tle-editor [type="range"] { touch-action: pan-y; }
 #tle-editor .tle-thumbnail { max-width: 100%; height: 56px; object-fit: contain; justify-self: start; border-radius: 4px; }
-#tle-editor .tle-message:empty { display: none; }
-#tle-editor [aria-invalid="true"] { outline: 1px solid #fa897e; }
-#tle-editor hr { width: 100%; margin: 0; }
 #tle-menu { padding: 0; border: 0; width: 100%; background: transparent; text-align: start; cursor: pointer; align-items: center; }
-
-@media (max-width: 600px) {
-    #tle-editor {
-        position: absolute;
-        inset: auto 8px max(64px, calc(env(safe-area-inset-bottom) + 56px)) auto;
-        width: min(440px, calc(100dvw - 16px));
-        max-height: 58dvh;
-        padding: 9px;
-    }
-}
-
-#tle-editor .tle-pick { align-self: start; }
-#tle-editor[data-picking="true"] > :is(nav, footer, .tle-body, .tle-status, .tle-message) { display: none; }
-#tle-editor .tle-checkbox { display: flex; align-items: center; gap: 6px; }
-#tle-editor .tle-checkbox input { width: auto; }
-#tle-editor .tle-field:has([type="text"]) { grid-template-columns: minmax(88px, 1fr) minmax(0, 2fr) auto; }
 
 #tle-entry-list { display: inline-flex; align-items: center; gap: 4px; padding-inline: 3px; font-size: 12px; }
 #tle-entry-list > summary { cursor: pointer; }
@@ -103,8 +53,6 @@
     #leftSendForm:has(#tle-entry-list) { max-width: 52%; }
     #tle-entry-list:not(details) { flex-wrap: wrap; }
 }
-#tle-editor .tle-host { opacity: .75; }
-#tle-editor[data-picking="true"] > .tle-host { display: none; }
 
 #tle-editor .tle-partial > summary { cursor: pointer; font-weight: 600; }
 #tle-editor .tle-partial > :is(select, button, fieldset) { margin-top: 6px; }
@@ -173,17 +121,242 @@
 #extensionsMenu > .extension_container,
 #options .options-content { min-width: 0; }
 
-@media (max-height: 520px) {
-    #tle-editor:not([data-picking="true"]) {
-        inset: 8px 8px auto auto;
-        max-height: calc(100dvh - 16px);
-    }
-    #tle-editor .tle-host { display: none; }
-    #tle-editor .tle-tabs {
-        flex: 0 0 auto;
-        flex-wrap: nowrap;
-        overflow-x: auto;
-    }
-    #tle-editor .tle-tabs button { flex: none; }
-    #tle-editor .tle-body { min-height: 0; }
+
+#tle-editor {
+    --tle-paper: #fff;
+    --tle-canvas: #f5f5fa;
+    --tle-ink: #222135;
+    --tle-muted: #57556b;
+    --tle-line: #dedde9;
+    --tle-accent: #493997;
+    --tle-soft: #eeebfc;
+    position: fixed;
+    z-index: 6000;
+    right: 14px;
+    bottom: max(14px, var(--tle-ui-bottom, 0px));
+    width: min(440px, calc(100vw - 28px));
+    height: min(755px, calc(var(--tle-ui-height, 100dvh) - 28px));
+    max-height: calc(var(--tle-ui-height, 100dvh) - 28px);
+    display: flex;
+    flex-direction: column;
+    background: var(--tle-canvas);
+    color: var(--tle-ink);
+    border: 1px solid #e8e7f1;
+    border-radius: 22px;
+    box-shadow: 0 16px 55px #17132d5c;
+    font: 14px/1.45 system-ui, "Noto Sans CJK SC", "PingFang SC", sans-serif;
+    text-shadow: none;
+    overflow: hidden;
 }
+
+#tle-editor *, #tle-editor *::before { box-sizing: border-box; }
+#tle-editor .tle-ui-header { background: var(--tle-paper); border-bottom: 1px solid var(--tle-line); padding: 13px 16px 10px; }
+#tle-editor .tle-title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+#tle-editor h2 { margin: 0; font-size: 24px; font-weight: 750; letter-spacing: .03em; }
+#tle-editor h3, #tle-editor h4 { margin: 0; font-size: 16px; font-weight: 720; }
+#tle-editor small { color: var(--tle-muted); line-height: 1.45; }
+#tle-editor .tle-status { color: var(--tle-muted); font-size: 11px; text-align: end; overflow-wrap: anywhere; }
+#tle-editor .tle-status[data-dirty=true] { color: #784900; background: #fff1ce; border-radius: 10px; padding: 3px 8px; }
+#tle-editor .tle-body {
+    min-height: 0;
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 13px 16px;
+    overflow: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+    scroll-padding: 10px;
+}
+#tle-editor .tle-body > * { flex-shrink: 0; }
+#tle-editor .tle-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+#tle-editor button:not(.fa-solid, .fa-regular), #tle-editor input, #tle-editor select { color: var(--tle-ink); font-family: inherit; text-shadow: none; }
+#tle-editor button:focus-visible, #tle-editor input:focus-visible, #tle-editor select:focus-visible, #tle-editor summary:focus-visible {
+    outline: 2px solid #6854c6;
+    outline-offset: 1px;
+}
+#tle-editor .menu_button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0;
+    width: auto;
+    min-width: 0;
+    min-height: 36px;
+    padding: 6px 11px;
+    background: var(--tle-paper);
+    border: 1px solid var(--tle-line);
+    border-radius: 9px;
+    text-align: center;
+    cursor: pointer;
+    box-shadow: none;
+    font-size: 13px;
+    white-space: normal;
+}
+#tle-editor .menu_button[aria-pressed=true], #tle-editor .menu_button[aria-expanded=true] {
+    color: var(--tle-accent);
+    background: var(--tle-soft);
+    border-color: #d9d2f8;
+}
+#tle-editor .tle-tabs { flex-wrap: nowrap; gap: 2px; background: var(--tle-canvas); border-radius: 11px; padding: 3px; }
+#tle-editor .tle-tabs .menu_button { flex: 1; padding-inline: 3px; background: transparent; border-color: transparent; color: var(--tle-muted); }
+#tle-editor .tle-tabs .menu_button[aria-pressed=true] { background: var(--tle-paper); color: var(--tle-accent); border-color: var(--tle-line); font-weight: 720; }
+#tle-editor .tle-pick { border: 0; padding: 3px 0 0; min-height: 30px; color: var(--tle-accent); background: none; }
+#tle-editor[data-picking=true] { height: auto; max-width: min(310px, 90vw); }
+#tle-editor[data-picking=true] :is(.tle-tabs, .tle-body, .tle-status, .tle-message, footer) { display: none; }
+#tle-editor[data-picking=true] .tle-title-row { margin: 0; }
+#tle-editor .tle-message { color: var(--tle-accent); background: var(--tle-paper); font-size: 12px; padding: 4px 16px; flex: 0 0 auto; }
+#tle-editor .tle-message:empty { display: none; }
+#tle-editor footer {
+    flex: 0 0 auto;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    border-top: 1px solid var(--tle-line);
+    background: var(--tle-paper);
+    padding: 9px 16px max(10px, env(safe-area-inset-bottom, 0px));
+}
+#tle-editor footer button { flex: 1; min-height: 44px; font-weight: 680; font-size: 14px; }
+#tle-editor footer .tle-primary { flex: 1.6; }
+#tle-editor .menu_button.tle-primary { background: var(--tle-accent); color: #fff; border-color: var(--tle-accent); }
+#tle-editor :is(input:not([type=checkbox], [type=range], [type=color]), select) {
+    min-width: 0;
+    width: 100%;
+    height: 38px;
+    margin: 0;
+    padding: 5px 8px;
+    border: 1px solid var(--tle-line);
+    border-radius: 8px;
+    background: #fff;
+    font-size: 16px;
+}
+#tle-editor input[type=range] { width: 100%; touch-action: pan-y; }
+#tle-editor input[type=checkbox] { width: auto; accent-color: var(--tle-accent); }
+#tle-editor input[aria-invalid] { outline: 1px solid #9f3752; }
+#tle-editor input::placeholder { color: #6a687e; opacity: 1; }
+
+#tle-editor .tle-segments { display: flex; gap: 4px; }
+#tle-editor .tle-segments[aria-label="选择菜单"] .menu_button { flex: 1; min-height: 43px; font-weight: 650; }
+#tle-editor .tle-menu-tools { display: flex; justify-content: space-between; gap: 8px; }
+#tle-editor .tle-menu-list-head { display: flex; align-items: baseline; justify-content: space-between; padding-inline: 2px; }
+#tle-editor .tle-menu-list { display: grid; gap: 5px; }
+#tle-editor .tle-menu-group-label {
+    font-size: 12px;
+    font-weight: 650;
+    color: var(--tle-muted);
+    padding: 5px 5px 0;
+}
+#tle-editor .tle-menu-row { border: 1px solid var(--tle-line); border-radius: 11px; background: var(--tle-paper); min-width: 0; }
+#tle-editor .tle-menu-row[data-expanded=true] { border-color: #b6aae9; }
+#tle-editor .tle-item-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px; padding: 4px 7px; min-height: 53px; }
+#tle-editor .tle-item-open {
+    min-width: 0;
+    min-height: 44px;
+    background: none;
+    border: 0;
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr) 12px;
+    align-items: center;
+    gap: 8px;
+    text-align: start;
+    padding: 2px;
+    font-size: 14px;
+    cursor: pointer;
+}
+#tle-editor .tle-item-name { font-weight: 650; overflow-wrap: anywhere; }
+#tle-editor .tle-item-chevron { color: var(--tle-muted); font-size: 18px; justify-self: end; }
+#tle-editor .tle-item-icon {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: var(--tle-soft);
+    color: var(--tle-accent);
+    overflow: hidden;
+    font-size: 14px;
+}
+#tle-editor .tle-item-icon img { width: 100%; height: 100%; object-fit: cover; }
+#tle-editor .tle-pin {
+    background: var(--tle-paper);
+    min-height: 40px;
+    min-width: 48px;
+    padding: 5px 7px;
+    border: 1px solid var(--tle-line);
+    border-radius: 8px;
+    font-size: 12px;
+    white-space: nowrap;
+    cursor: pointer;
+}
+#tle-editor .tle-pin[aria-pressed=true] { color: var(--tle-accent); background: var(--tle-soft); border-color: #d9d2f8; }
+#tle-editor .tle-item-edit, #tle-editor .tle-edit-card, #tle-editor .tle-template-card, #tle-editor .tle-share-card {
+    display: grid;
+    gap: 9px;
+    padding: 11px;
+    min-width: 0;
+}
+#tle-editor :is(.tle-edit-card, .tle-template-card, .tle-share-card) {
+    background: var(--tle-paper);
+    border: 1px solid var(--tle-line);
+    border-radius: 12px;
+}
+#tle-editor .tle-item-edit { border-top: 1px solid var(--tle-line); }
+#tle-editor .tle-item-edit .tle-actions button { flex: 1; }
+#tle-editor .tle-column-setting { display: flex; justify-content: space-between; align-items: center; }
+#tle-editor .tle-menu-field { display: grid; grid-template-columns: minmax(88px, .8fr) minmax(0, 1.4fr); align-items: center; gap: 8px; }
+#tle-editor .tle-group-compose:not([hidden]) { display: flex; align-items: center; gap: 7px; }
+#tle-editor .tle-group-compose button { flex: 0 0 auto; }
+#tle-editor .tle-ui-disclosure, #tle-editor .tle-partial {
+    border: 1px solid var(--tle-line);
+    border-radius: 10px;
+    background: var(--tle-paper);
+    padding: 8px 10px;
+}
+#tle-editor :is(.tle-ui-disclosure, .tle-partial) > summary { color: var(--tle-muted); font-size: 13px; cursor: pointer; font-weight: 620; }
+#tle-editor :is(.tle-ui-disclosure, .tle-partial)[open] > :not(summary) { margin-block-start: 8px; }
+#tle-editor .tle-zones { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+#tle-editor .tle-share-option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 64px;
+    border: 1px solid var(--tle-line);
+    border-radius: 9px;
+    background: var(--tle-canvas);
+    text-align: start;
+    padding: 9px;
+    cursor: pointer;
+}
+#tle-editor .tle-share-option strong, #tle-editor .tle-share-option small { display: block; }
+#tle-editor .tle-share-option strong { color: var(--tle-accent); font-size: 14px; }
+#tle-editor .tle-share-arrow { color: var(--tle-accent); font-size: 21px; margin-inline-end: 2px; }
+
+@media (max-width: 600px) {
+    #tle-editor {
+        position: absolute;
+        right: 0;
+        bottom: var(--tle-ui-bottom, 0px);
+        width: 100%;
+        height: min(690px, calc(var(--tle-ui-height, 100dvh) - max(16px, env(safe-area-inset-top, 0px))));
+        max-height: calc(var(--tle-ui-height, 100dvh) - max(16px, env(safe-area-inset-top, 0px)));
+        border-radius: 21px 21px 0 0;
+        padding-inline: env(safe-area-inset-left, 0px) env(safe-area-inset-right, 0px);
+    }
+    #tle-editor[data-picking=true] { bottom: calc(var(--tle-ui-bottom, 0px) + 64px); border-radius: 16px 0 0 16px; }
+}
+@media (max-height: 520px) {
+    #tle-editor .tle-ui-header { padding-block: 6px; }
+    #tle-editor .tle-title-row { margin-bottom: 4px; }
+    #tle-editor h2 { font-size: 19px; }
+    #tle-editor .tle-body { padding-block: 7px; }
+}
+#tle-editor[data-preview=true] {
+    z-index: 30000;
+    inset: max(8px, env(safe-area-inset-top, 0px)) max(8px, env(safe-area-inset-right, 0px)) auto auto;
+    width: max-content;
+    border-radius: 12px;
+}
+#tle-editor[data-preview=true] .tle-ui-header { padding: 6px 11px; border-bottom: 0; }
+#tle-editor[data-preview=true] .tle-title-row { display: none; }

@@ -6,7 +6,7 @@ import { getContext } from '/scripts/st-context.js';
 import { createRuntime } from './runtime.js';
 import { createMenuRuntime } from './menu-runtime.js';
 import { createMenuEditor } from './menu-editor.js';
-import { runtimeMenuFeatures } from './menus.mjs';
+import { MENUS, runtimeMenuFeatures } from './menus.mjs';
 import { createCustomization } from './customization.js';
 import { BREAKPOINT, GROUPS, SECTIONS, applyTemplateParts, blankTemplate, cleanField, cleanName, compileCss, effectiveFields, matchScene, mergeTheme, normalizeUrl, parseTemplate } from './model.mjs';
 
@@ -31,6 +31,11 @@ let menu;
 let style;
 let ready;
 let section = 'top';
+let page = 'menus';
+let zone = '';
+let pickedMenu = false;
+let previewMenu = '';
+let editorViewport;
 let device = 'desktop';
 let pendingImport = 0;
 let importedParts;
@@ -92,6 +97,22 @@ const customization = createCustomization(isTauriTavern);
 const nativeMenus = createMenuRuntime();
 const menuEditor = createMenuEditor({
     getTemplate: current, setMessage, getItems: nativeMenus.items, button,
+    onPreview(id, event) {
+        event.stopPropagation();
+        const definition = MENUS[id];
+        const trigger = document.querySelector(definition.trigger);
+        const popup = document.querySelector(definition.panel);
+        if (!trigger || !popup) return;
+        if (getComputedStyle(popup).display === 'none') {
+            trigger.focus({ preventScroll: true });
+            trigger.click();
+        }
+        setPicking(true);
+        previewMenu = id;
+        panel.dataset.preview = 'true';
+        pickButton.textContent = '返回编辑';
+        pickButton.focus({ preventScroll: true });
+    },
     onChange() {
         draft.templates[draft.active] = parseTemplate(current());
         refreshPreview();
@@ -102,9 +123,7 @@ const menuEditor = createMenuEditor({
 const runtime = createRuntime({
     getLayout: savedLayout,
     openTemplates: () => {
-        section = 'templates';
-        openEditor();
-        if (panel) renderBody();
+        openEditor('templates');
     },
     isPicking: () => picking,
     scrollToBottom() {
@@ -145,7 +164,7 @@ function updateStatus() {
     if (!panel) return;
     const comparable = { ...saved, active: sceneActive ?? saved.active };
     const dirty = invalidUrls.size || JSON.stringify(comparable) !== JSON.stringify(draft);
-    status.textContent = current().name + (dirty ? ' · 有未保存修改' : ' · 已保存') +
+    status.textContent = current().name + (dirty ? ' · 未保存' : ' · 已保存') +
         (draft.auto && !draft.manual && draft.active === sceneActive ? ' · 场景自动切换' : '');
     status.dataset.dirty = dirty ? 'true' : 'false';
 }
@@ -422,7 +441,7 @@ function renderPartialApply() {
         }
         refreshPreview();
         updateStatus();
-        setMessage('已套用所选区域。点击「应用」保存，或点击「取消」撤销。');
+        setMessage('已套用所选区域。点击「保存修改」保存，或点击「取消」撤销。');
     });
     area.append(source, file, button('从文件选择来源', () => file.click()), checklist, merge);
     renderChoices();
@@ -486,13 +505,13 @@ function renderTemplates() {
             const template = parseTemplate(JSON.parse(await selected.text()));
             if (draft !== opening || ticket !== pendingImport) return;
             addTemplate(template);
-            setMessage('模板已导入。可继续编辑，或点击「应用」保存。');
+            setMessage('模板已导入。可继续编辑，或点击「保存修改」保存。');
         } catch (error) {
             if (draft === opening && ticket === pendingImport) setMessage('导入失败：' + error.message);
         }
     });
 
-    const sharing = element('div', '', 'tle-actions');
+    const sharing = element('section', '', 'tle-share-card');
     const validate = action => () => {
         if (invalidUrls.size) return setMessage('请先修正或清空无效图片 URL。');
         action();
@@ -502,11 +521,19 @@ function renderTemplates() {
     themeName.maxLength = 80;
     themeName.placeholder = '原生主题名称（选填）';
     themeName.setAttribute('aria-label', '原生主题名称');
-    sharing.append(
-        button('导入模板 JSON', () => file.click()),
-        button('导出模板 JSON', validate(() => jsonDownload(parseTemplate(current()), current().name))),
-    );
-    const native = button('导出酒馆原生主题', validate(() => {
+    const shareOption = (title, description, action) => {
+        const choice = button('', action, 'tle-share-option');
+        choice.setAttribute('aria-label', title);
+        const text = element('span');
+        text.append(element('strong', title), element('small', description));
+        const arrow = element('span', '↓', 'tle-share-arrow');
+        arrow.setAttribute('aria-hidden', 'true');
+        choice.append(text, arrow);
+        return choice;
+    };
+    sharing.append(element('h3', '分享'), shareOption('完整模板（含排序和分组）',
+        '发给安装了纯白的朋友，可继续编辑。', validate(() => jsonDownload(parseTemplate(current()), current().name))));
+    const native = shareOption('酒馆主题（静态外观）', '可从酒馆原生主题菜单导入。', validate(() => {
         const title = cleanName(themeName.value) || cleanName(power_user.theme + ' · ' + current().name);
         const snapshot = getThemeObject(title);
         jsonDownload(mergeTheme(snapshot, current()), title);
@@ -528,52 +555,91 @@ function renderTemplates() {
         renderBody();
         updateStatus();
     });
-    body.append(select, name, actions, autoLabel);
-    if (draft.auto) body.append(manual);
+    const management = element('details', '', 'tle-ui-disclosure');
+    management.append(element('summary', '管理模板'), name, actions, autoLabel);
+    if (draft.auto) management.append(manual);
+    management.append(button('恢复当前模板默认', () => {
+        draft.templates[draft.active] = blankTemplate(current().name);
+        invalidUrls.clear();
+        setMessage('已预览默认布局。点击「保存修改」应用。');
+        renderBody();
+        refreshPreview();
+        updateStatus();
+    }));
+    const templateCard = element('section', '', 'tle-template-card');
+    const toolbar = element('div', '', 'tle-actions');
+    toolbar.append(button('另存为', () => {
+        management.open = true;
+        name.focus();
+        management.scrollIntoView({ block: 'nearest' });
+    }), button('导入模板', () => file.click()));
+    templateCard.append(element('h3', '当前模板'), select, toolbar);
     const menuFeatures = runtimeMenuFeatures(current().menus);
-    body.append(file, sharing, renderPartialApply(), element('hr'), themeName);
+    sharing.append(native);
+    const shareOptions = element('details', '', 'tle-ui-disclosure');
+    shareOptions.append(element('summary', '主题名称与分享说明'), themeName);
+    body.append(file, templateCard, sharing, shareOptions, management, renderPartialApply());
     if (menuFeatures.length) {
         const notice = element('section', '', 'tle-export-notice');
         notice.append(element('strong', '以下菜单效果需安装纯白并导入可编辑模板'));
         const list = element('ul');
         for (const feature of menuFeatures) list.append(element('li', feature));
         notice.append(list);
-        body.append(notice);
+        shareOptions.append(notice);
     }
-    body.append(native, element('small', '原生主题包含静态样式。入口、彩蛋及场景切换随可编辑模板分享。可编辑模板在 SillyTavern 与 TauriTavern 之间通用。'));
+
 }
 
+const zones = {
+    top: ['顶栏', ['top', 'topButton', 'logo', ...Object.keys(SECTIONS).filter(key => SECTIONS[key].selector?.endsWith(' .drawer-icon') && key !== 'topButton')]],
+    chat: ['聊天消息', ['chat', ...Object.keys(SECTIONS).filter(key => SECTIONS[key].group === 'messages'), 'swipeButton', 'editButton', 'copyButton', 'divider']],
+    input: ['输入栏', ['input', 'sendButton', 'stopButton', 'regenerateButton', 'wandButton', 'moreButton', 'bottomButton', 'mobileComposer', 'launcher']],
+    page: ['页面背景', ['page', 'cover', 'greeting', 'sticker']],
+    other: ['其他面板', []],
+};
+const assigned = new Set(Object.values(zones).flatMap(([, keys]) => keys));
+zones.other[1].push(...Object.keys(SECTIONS).filter(key => !assigned.has(key)));
+
 function renderBody() {
-    const tabs = panel.querySelectorAll('[data-section]');
-    const descriptor = SECTIONS[section];
-    const group = descriptor?.group ?? section;
-    for (const tab of tabs) tab.setAttribute('aria-pressed', String(tab.dataset.section === group));
+    for (const tab of panel.querySelectorAll('[data-section]')) tab.setAttribute('aria-pressed', String(tab.dataset.section === page));
     body.replaceChildren();
-    if (section === 'templates') {
+    body.scrollTop = 0;
+    if (page === 'templates') {
         renderTemplates();
         return;
     }
-    if (section === 'nativeMenus') {
-        menuEditor.render(body);
+    if (page === 'menus') {
+        menuEditor.render(body, false, pickedMenu);
+        pickedMenu = false;
         return;
     }
-    if (GROUPS[group]) {
-        const selection = element('select', '', 'text_pole');
-        selection.setAttribute('aria-label', '编辑对象');
-        for (const [id, item] of Object.entries(SECTIONS)) {
-            if (item.group === group) selection.add(new Option(item.label, id));
-        }
-        selection.value = section;
-        selection.addEventListener('change', () => {
-            section = selection.value;
-            if (section === 'scene') device = 'desktop';
-            if (section === 'mobileComposer') device = 'mobile';
+    const zonesList = element('div', '', 'tle-zones');
+    for (const [key, [label, keys]] of Object.entries(zones)) {
+        const control = button(label, () => {
+            zone = zone === key ? '' : key;
+            if (zone) section = keys[0];
             setMessage('');
             renderBody();
         });
-        body.append(selection);
-        if (group === 'buttons') body.append(element('small', '先编辑统一风格，单个按钮中填写的值可覆盖对应字段。'));
+        control.setAttribute('aria-expanded', String(zone === key));
+        zonesList.append(control);
     }
+    body.append(zonesList);
+    if (!zone) return;
+    const descriptor = SECTIONS[section];
+    const group = descriptor.group;
+    const selection = element('select', '', 'text_pole tle-area-select');
+    selection.setAttribute('aria-label', '编辑对象');
+    for (const id of zones[zone][1]) selection.add(new Option(SECTIONS[id].label, id));
+    selection.value = section;
+    selection.addEventListener('change', () => {
+        section = selection.value;
+        if (section === 'scene') device = 'desktop';
+        if (section === 'mobileComposer') device = 'mobile';
+        setMessage('');
+        renderBody();
+    });
+    body.append(selection);
     const devices = element('div', '', 'tle-actions');
     for (const [key, label] of [['desktop', '桌面设置'], ['mobile', '移动端覆盖']]) {
         const control = button(label, () => {
@@ -629,8 +695,15 @@ function renderBody() {
 function setPicking(value) {
     picking = value;
     if (!panel) return;
+    if (!value && previewMenu) {
+        const definition = MENUS[previewMenu];
+        previewMenu = '';
+        delete panel.dataset.preview;
+        const popup = document.querySelector(definition.panel);
+        if (popup && getComputedStyle(popup).display !== 'none') document.querySelector(definition.trigger)?.click();
+    }
     panel.dataset.picking = String(value);
-    pickButton.textContent = value ? '取消点选' : '点选界面元素';
+    pickButton.textContent = value ? '取消点选' : '点选酒馆里的元素';
     pickButton.setAttribute('aria-pressed', String(value));
 }
 
@@ -640,7 +713,7 @@ const directTargets = Object.entries(SECTIONS)
 const baseTargets = [['top', '#top-settings-holder, #top-bar'], ['input', '#send_form'], ['chat', '#chat'], ['page', '#bg1']];
 
 function pickElement(event) {
-    if (!picking || !(event.target instanceof Element) || panel?.contains(event.target)) return;
+    if (!picking || previewMenu || !(event.target instanceof Element) || panel?.contains(event.target)) return;
     const target = event.target;
     const menu = nativeMenus.hit(target);
     if (menu) {
@@ -651,9 +724,11 @@ function pickElement(event) {
         }
         event.preventDefault();
         event.stopImmediatePropagation();
-        section = 'nativeMenus';
+        page = 'menus';
+        pickedMenu = true;
         menuEditor.select(menu, matchMedia('(max-width: ' + BREAKPOINT + 'px)').matches);
         setPicking(false);
+        document.querySelector(MENUS[menu.id].trigger)?.click();
         renderBody();
         return;
     }
@@ -664,6 +739,8 @@ function pickElement(event) {
     event.preventDefault();
     event.stopImmediatePropagation();
     section = key;
+    page = 'appearance';
+    zone = Object.keys(zones).find(name => zones[name][1].includes(key)) ?? 'other';
     device = matchMedia('(max-width: ' + BREAKPOINT + 'px)').matches ? 'mobile' : 'desktop';
     setPicking(false);
     renderBody();
@@ -672,6 +749,8 @@ function pickElement(event) {
 
 function closeEditor() {
     setPicking(false);
+    editorViewport?.abort();
+    editorViewport = undefined;
     panel?.remove();
     panel = body = status = message = draft = undefined;
     invalidUrls.clear();
@@ -681,12 +760,20 @@ function closeEditor() {
     (document.querySelector('#extensionsMenuButton') ?? menu?.firstElementChild)?.focus();
 }
 
-function openEditor() {
+function openEditor(initial) {
     if (applying) return;
     if (panel) {
+        if (initial === 'templates') {
+            page = 'templates';
+            renderBody();
+        }
         panel.querySelector('h2').focus();
         return;
     }
+    page = initial === 'templates' ? 'templates' : 'menus';
+    zone = '';
+    device = matchMedia('(max-width: ' + BREAKPOINT + 'px)').matches ? 'mobile' : 'desktop';
+    menuEditor.reset();
     draft = structuredClone(saved);
     draft.active = sceneActive ?? saved.active;
     panel = element('section');
@@ -698,12 +785,9 @@ function openEditor() {
     status = element('div', '', 'tle-status');
     const tabs = element('nav', '', 'tle-actions tle-tabs');
     tabs.setAttribute('aria-label', '布局区域');
-    const baseTabs = Object.entries(SECTIONS).filter(([, item]) => !item.group).map(([key, item]) => [key, item.label]);
-    for (const [key, label] of [...baseTabs, ...Object.entries(GROUPS), ['nativeMenus', '原生菜单'], ['templates', '模板']]) {
+    for (const [key, label] of [['menus', '菜单'], ['appearance', '界面外观'], ['templates', '我的模板']]) {
         const tab = button(label, () => {
-            section = Object.keys(SECTIONS).find(id => SECTIONS[id].group === key) ?? key;
-            if (section === 'scene') device = 'desktop';
-            if (section === 'mobileComposer') device = 'mobile';
+            page = key;
             setMessage('');
             renderBody();
         });
@@ -715,7 +799,8 @@ function openEditor() {
     message.setAttribute('role', 'status');
     const actions = element('footer', '', 'tle-actions');
     actions.append(
-        button('应用', async () => {
+        button('取消', closeEditor),
+        button('保存修改', async () => {
             if (applying) return;
             if (invalidUrls.size) return setMessage('请先修正或清空无效图片 URL。');
             const next = structuredClone(draft);
@@ -732,15 +817,6 @@ function openEditor() {
                 applying = false;
             }
         }, 'menu_button tle-primary'),
-        button('取消', closeEditor),
-        button('恢复默认', () => {
-            draft.templates[draft.active] = blankTemplate(current().name);
-            invalidUrls.clear();
-            setMessage('已预览默认布局。点击「应用」保存。');
-            renderBody();
-            refreshPreview();
-            updateStatus();
-        }),
     );
     panel.addEventListener('keydown', event => {
         if (event.key === 'Escape') {
@@ -749,10 +825,33 @@ function openEditor() {
             else closeEditor();
         }
     });
-    pickButton = button('点选界面元素', () => setPicking(!picking), 'menu_button tle-pick');
-    const hostLabel = element('small', isTauriTavern() ? 'TauriTavern' : 'SillyTavern', 'tle-host');
-    panel.append(heading, hostLabel, status, pickButton, tabs, body, message, actions);
+    pickButton = button('点选酒馆里的元素', event => {
+        if (previewMenu) event.stopPropagation();
+        setPicking(!picking);
+    }, 'menu_button tle-pick');
+    const header = element('header', '', 'tle-ui-header');
+    const titleRow = element('div', '', 'tle-title-row');
+    titleRow.append(heading, status);
+    header.append(titleRow, tabs, pickButton);
+    panel.append(header, body, message, actions);
     document.body.append(panel);
+    editorViewport = new AbortController();
+    const opts = { signal: editorViewport.signal };
+    const fit = () => {
+        const viewport = window.visualViewport;
+        if (!panel || !viewport) return;
+        const occluded = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
+        panel.style.setProperty('--tle-ui-height', viewport.height + 'px');
+        panel.style.setProperty('--tle-ui-bottom', occluded + 'px');
+        const focused = document.activeElement;
+        if (focused && body.contains(focused) && focused.matches('input, select, textarea')) {
+            focused.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        }
+    };
+    window.visualViewport?.addEventListener('resize', fit, opts);
+    window.visualViewport?.addEventListener('scroll', fit, opts);
+    window.addEventListener('resize', fit, opts);
+    fit();
     renderBody();
     updateStatus();
     heading.focus();

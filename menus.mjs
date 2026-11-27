@@ -90,6 +90,11 @@ export function menuView(menus, id, mobile) {
     return view;
 }
 
+export function menuRank(view, item, index) {
+    const group = item.group === 'more' ? 80000 : (Object.keys(view.groups).indexOf(item.group) + 1) * 3000;
+    return group + (item.pinned ? 1 : 1000) + (item.order ?? 1000 + index);
+}
+
 const hasFlow = values => values.order !== undefined || values.pinned || values.group;
 export function menuNeedsGrid(view) {
     return view.panel.columns !== undefined || view.panel.gap !== undefined || Object.values(view.items).some(hasFlow);
