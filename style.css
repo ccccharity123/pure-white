@@ -11,44 +11,6 @@
 #tle-entry-list .menu_button { min-width: max-content; padding-inline: 5px; margin: 0; }
 #tle-entry-list > div .menu_button { margin: 4px; }
 
-.tle-egg {
-    position: absolute;
-    z-index: 70;
-    left: 50%;
-    top: 45%;
-    translate: -50% -50%;
-    display: grid;
-    justify-items: center;
-    gap: 6px;
-    max-width: 78%;
-    padding: 10px 18px;
-    border-radius: 12px;
-    background: var(--SmartThemeBlurTintColor, #202027);
-    color: var(--SmartThemeBodyColor, #fff);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    text-align: center;
-    pointer-events: none;
-}
-.tle-egg img { max-width: 100%; max-height: 28vh; object-fit: contain; }
-.tle-egg[data-location="top"] { top: 10%; }
-.tle-egg[data-location="bottom"] { top: 75%; }
-.tle-egg[data-effect="fade"] { animation: tle-egg-fade var(--tle-egg-duration) both; }
-.tle-egg[data-effect="ripple"] { animation: tle-egg-fade var(--tle-egg-duration) both; }
-.tle-egg[data-effect="ripple"]::after {
-    position: absolute;
-    inset: 0;
-    content: "";
-    border: 2px solid currentColor;
-    border-radius: 50%;
-    animation: tle-egg-ripple var(--tle-egg-duration) ease-out both;
-}
-@keyframes tle-egg-fade { 0%, 100% { opacity: 0; } 16%, 76% { opacity: 1; } }
-@keyframes tle-egg-ripple { from { scale: .5; opacity: .7; } to { scale: 4; opacity: 0; } }
-@media (prefers-reduced-motion: reduce) {
-    .tle-egg, .tle-egg::after { animation: none !important; }
-    .tle-egg::after { display: none; }
-}
 @media (max-width: 600px) {
     #leftSendForm:has(#tle-entry-list) { max-width: 52%; }
     #tle-entry-list:not(details) { flex-wrap: wrap; }
@@ -360,3 +322,27 @@
 }
 #tle-editor[data-preview=true] .tle-ui-header { padding: 6px 11px; border-bottom: 0; }
 #tle-editor[data-preview=true] .tle-title-row { display: none; }
+
+#tle-editor .tle-appearance-map {
+    display: grid;
+    grid-template-columns: minmax(53px, 1fr) minmax(0, 2fr) minmax(53px, 1fr);
+    grid-template-areas: "top top top" "pendant pendant pendant" ". edge-top ." "edge-left chat edge-right" ". edge-bottom ." "input input input" "page page other";
+    gap: 4px;
+    padding: 8px;
+    border: 1px solid var(--tle-line);
+    border-radius: 12px;
+}
+#tle-editor .tle-appearance-map button { min-height: 35px; padding-inline: 3px; }
+#tle-editor [data-map-slot="top"] { grid-area: top; }
+#tle-editor [data-map-slot="pendant"] { grid-area: pendant; }
+#tle-editor [data-map-slot="edge-top"] { grid-area: edge-top; }
+#tle-editor [data-map-slot="edge-right"] { grid-area: edge-right; }
+#tle-editor [data-map-slot="edge-bottom"] { grid-area: edge-bottom; }
+#tle-editor [data-map-slot="edge-left"] { grid-area: edge-left; }
+#tle-editor [data-map-slot="chat"] { grid-area: chat; min-height: 56px; }
+#tle-editor [data-map-slot="input"] { grid-area: input; }
+#tle-editor [data-map-slot="page"] { grid-area: page; }
+#tle-editor [data-map-slot="other"] { grid-area: other; }
+#tle-editor .tle-appearance-tools, #tle-editor .tle-appearance-results { display: grid; gap: 5px; }
+#tle-editor .tle-appearance-results button { justify-content: start; text-align: start; }
+#tle-editor .tle-field-state { display: block; font-size: 11px; }

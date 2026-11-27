@@ -125,7 +125,6 @@ const runtime = createRuntime({
     openTemplates: () => {
         openEditor('templates');
     },
-    isPicking: () => picking,
     scrollToBottom() {
         if (typeof hostApp.getChatScrollHeight === 'function' && typeof hostApp.setChatScrollTop === 'function') {
             hostApp.setChatScrollTop(hostApp.getChatScrollHeight());
@@ -249,6 +248,8 @@ function changeField(key, value) {
     refreshPreview();
     refreshThumbnail();
     updateStatus();
+    const indicator = body?.querySelector('#tle-field-state-' + key);
+    if (indicator) indicator.textContent = current().mobile[section]?.[key] === undefined ? '继承桌面' : '手机已覆盖';
 }
 
 function renderField(key, field) {
@@ -256,9 +257,15 @@ function renderField(key, field) {
     const own = current()[device][section]?.[key];
     const effective = effectiveFields(current(), device, section)[key];
     const id = 'tle-field-' + key;
-    const label = element('label', field.label + (field.unit ? '（' + field.unit + '）' : ''));
+    const fieldLabel = field.label + (field.unit ? '（' + field.unit + '）' : '');
+    const label = element('label', fieldLabel);
     label.htmlFor = id;
     row.append(label);
+    if (device === 'mobile' && section !== 'mobileComposer') {
+        const state = element('small', own === undefined ? '继承桌面' : '手机已覆盖', 'tle-field-state');
+        state.id = 'tle-field-state-' + key;
+        label.append(state);
+    }
 
     let input;
     const urlKey = section + '/' + device;
@@ -325,6 +332,8 @@ function renderField(key, field) {
     }
 
     input.id = id;
+    input.setAttribute('aria-label', fieldLabel);
+    if (device === 'mobile' && section !== 'mobileComposer') input.setAttribute('aria-describedby', 'tle-field-state-' + key);
     row.append(input);
     if (field.type === 'url') {
         row.classList.add('tle-url');
@@ -591,7 +600,7 @@ function renderTemplates() {
 }
 
 const zones = {
-    top: ['顶栏', ['top', 'topButton', 'logo', ...Object.keys(SECTIONS).filter(key => SECTIONS[key].selector?.endsWith(' .drawer-icon') && key !== 'topButton')]],
+    top: ['顶栏', ['top', 'topPendant', 'topButton', 'logo', ...Object.keys(SECTIONS).filter(key => SECTIONS[key].selector?.endsWith(' .drawer-icon') && key !== 'topButton')]],
     chat: ['聊天消息', ['chat', ...Object.keys(SECTIONS).filter(key => SECTIONS[key].group === 'messages'), 'swipeButton', 'editButton', 'copyButton', 'divider']],
     input: ['输入栏', ['input', 'sendButton', 'stopButton', 'regenerateButton', 'wandButton', 'moreButton', 'bottomButton', 'mobileComposer', 'launcher']],
     page: ['页面背景', ['page', 'cover', 'greeting', 'sticker']],
@@ -599,6 +608,84 @@ const zones = {
 };
 const assigned = new Set(Object.values(zones).flatMap(([, keys]) => keys));
 zones.other[1].push(...Object.keys(SECTIONS).filter(key => !assigned.has(key)));
+
+const appearanceMap = [
+    ['top', '顶栏', 'top'], ['topPendant', '顶栏下方挂件', 'pendant'],
+    ['chatFrametop', '消息区上边', 'edge-top'],
+    ['chatFrameleft', '消息区左边', 'edge-left'], ['chat', '聊天消息', 'chat'], ['chatFrameright', '消息区右边', 'edge-right'],
+    ['chatFramebottom', '消息区下边', 'edge-bottom'], ['input', '输入栏', 'input'],
+    ['page', '页面背景', 'page'], [zones.other[1][0], '其他面板', 'other'],
+];
+const appearanceSearch = Object.entries(SECTIONS).flatMap(([key, descriptor]) =>
+    Object.entries(descriptor.fields).map(([field, config]) => ({
+        key, field, label: descriptor.label + ' · ' + config.label,
+    })));
+
+function chooseAppearance(key, field) {
+    section = key;
+    zone = Object.keys(zones).find(name => zones[name][1].includes(key)) ?? 'other';
+    if (key === 'scene') device = 'desktop';
+    if (key === 'mobileComposer') device = 'mobile';
+    setMessage('');
+    renderBody();
+    if (field) {
+        const input = document.getElementById('tle-field-' + field);
+        input?.focus({ preventScroll: true });
+        input?.scrollIntoView({ block: 'center' });
+    }
+}
+
+function renderAppearanceNavigation() {
+    const devices = element('div', '', 'tle-segments tle-appearance-devices');
+    devices.setAttribute('aria-label', '外观编辑设备');
+    for (const [key, label] of [['desktop', '桌面设置'], ['mobile', '手机设置']]) {
+        const control = button(label, () => { device = key; renderBody(); });
+        control.setAttribute('aria-pressed', String(device === key));
+        devices.append(control);
+    }
+    body.append(devices);
+    const map = element('div', '', 'tle-appearance-map');
+    map.setAttribute('role', 'group');
+    map.setAttribute('aria-label', '酒馆外观示意图');
+    for (const [key, label, slot] of appearanceMap) {
+        const control = button(label, () => chooseAppearance(key));
+        control.dataset.mapSlot = slot;
+        control.setAttribute('aria-pressed', String(Boolean(zone && key === section)));
+        map.append(control);
+    }
+    body.append(map);
+    const tools = element('div', '', 'tle-appearance-tools');
+    const fallback = element('details', '', 'tle-ui-disclosure');
+    const select = element('select');
+    select.setAttribute('aria-label', '全部外观对象');
+    select.add(new Option('选择外观对象', ''));
+    for (const [label, keys] of Object.values(zones)) {
+        const group = element('optgroup');
+        group.label = label;
+        for (const key of keys) group.append(new Option(SECTIONS[key].label, key));
+        select.append(group);
+    }
+    select.value = zone ? section : '';
+    select.addEventListener('change', () => { if (select.value) chooseAppearance(select.value); });
+    fallback.append(element('summary', '用列表选择'), select);
+    const search = element('details', '', 'tle-ui-disclosure');
+    const input = element('input');
+    input.type = 'search';
+    input.placeholder = '例如：圆角、透明度、挂件';
+    input.setAttribute('aria-label', '搜索设置');
+    const results = element('div', '', 'tle-appearance-results');
+    input.addEventListener('input', () => {
+        results.replaceChildren();
+        const words = input.value.toLowerCase().trim().split(/\s+/).filter(Boolean);
+        if (!words.length) return;
+        const match = appearanceSearch.filter(item => words.every(word => item.label.toLowerCase().includes(word)));
+        if (!match.length) results.append(element('small', '没有匹配的设置'));
+        for (const item of match) results.append(button(item.label, () => chooseAppearance(item.key, item.field)));
+    });
+    search.append(element('summary', '搜索设置'), input, results);
+    tools.append(fallback, search);
+    body.append(tools);
+}
 
 function renderBody() {
     for (const tab of panel.querySelectorAll('[data-section]')) tab.setAttribute('aria-pressed', String(tab.dataset.section === page));
@@ -613,18 +700,7 @@ function renderBody() {
         pickedMenu = false;
         return;
     }
-    const zonesList = element('div', '', 'tle-zones');
-    for (const [key, [label, keys]] of Object.entries(zones)) {
-        const control = button(label, () => {
-            zone = zone === key ? '' : key;
-            if (zone) section = keys[0];
-            setMessage('');
-            renderBody();
-        });
-        control.setAttribute('aria-expanded', String(zone === key));
-        zonesList.append(control);
-    }
-    body.append(zonesList);
+    renderAppearanceNavigation();
     if (!zone) return;
     const descriptor = SECTIONS[section];
     const group = descriptor.group;
@@ -640,30 +716,11 @@ function renderBody() {
         renderBody();
     });
     body.append(selection);
-    const devices = element('div', '', 'tle-actions');
-    for (const [key, label] of [['desktop', '桌面设置'], ['mobile', '移动端覆盖']]) {
-        const control = button(label, () => {
-            device = key;
-            renderBody();
-        });
-        control.setAttribute('aria-pressed', String(device === key));
-        devices.append(control);
-    }
-    if (section !== 'scene' && section !== 'mobileComposer') {
-        body.append(devices);
-        body.append(element('small', device === 'mobile'
-            ? '屏幕宽度 ≤ ' + BREAKPOINT + ' px 时生效。留空继承桌面。'
-            : '桌面设定也是移动端的继承值。'));
-    }
     if (section === 'mobileComposer') body.append(element('small', '仅在宽度 ≤ ' + BREAKPOINT + ' px 时生效。数字越小越靠前。「消息更多」操作当前最后一条消息。'));
     if (section === 'messageInfo') body.append(element('small', '显示已有的消息信息。模型名称和 Token 数需由酒馆保存。'));
     if (group === 'runtime') body.append(element('small', (isTauriTavern() ? '当前宿主为 TauriTavern。' : '当前宿主为 SillyTavern。') +
-        '此组效果由纯白运行，需要安装扩展。提示音取决于系统 WebView 的音频权限。'));
+        '此组效果由纯白运行，需要安装扩展。'));
     if (group === 'panels' && isTauriTavern()) body.append(element('small', '底部抽屉样式适用于这四个原生抽屉，TauriTavern 专属面板沿用宿主布局。'));
-    if (section === 'egg') body.append(button('测试彩蛋', () => {
-        if (invalidUrls.has(section + '/' + device)) return setMessage('请先修正图片 URL。');
-        runtime.play(effectiveFields(current(), device, 'egg'));
-    }));
     if (section === 'scene') {
         body.append(element('small', '在「模板」开启自动切换。聊天匹配优先于角色匹配，时段用本地时间。'));
         const context = sceneContext();

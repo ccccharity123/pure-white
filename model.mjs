@@ -85,7 +85,6 @@ const panelFields = {
     radius: number('圆角', 0, 40, 'px', 12), ...image,
 };
 const region = (label, group, selector, kind, fields) => ({ label, group, selector, kind, fields });
-const onOff = { on: '启用', off: '停用' };
 const artFields = {
     ...image, text: text('文字', 140), color: color('文字颜色'),
     fontSize: number('字号', 10, 36, 'px', 16), sizePx: number('图片尺寸', 16, 380, 'px', 80),
@@ -103,6 +102,15 @@ for (const [key, [label]] of Object.entries(COMPOSER_BUTTONS)) {
     composerFields[key] = choices(label + '位置', { native: '酒馆原位', left: '输入框左侧', right: '输入框右侧' });
     composerFields[key + 'Order'] = number(label + '顺序', 1, 9, '位', 5);
 }
+
+const frameSides = { top: '上边', right: '右边', bottom: '下边', left: '左边' };
+const frameSections = Object.entries(frameSides).map(([side, label]) => [
+    'chatFrame' + side,
+    region('消息区 · ' + label + '素材', 'messages', '', 'art', {
+        url: image.url, sizePx: number('素材厚度', 8, 160, 'px', 38),
+        repeat: choices('铺放方式', { repeat: '沿边平铺', stretch: '拉伸铺满' }),
+    }),
+]);
 
 const extraSections = {
     buttonGroup: region('统一按钮风格', 'buttons', '', 'button', buttonFields),
@@ -134,6 +142,13 @@ const extraSections = {
     cover: region('无聊天封面', 'decorations', '#chat .welcomePanel', 'art', artFields),
     greeting: region('空聊天欢迎语', 'decorations', '#chat:not(:has(.mes, .welcomePanel))', 'art', artFields),
     logo: region('顶栏徽标', 'decorations', '#top-bar', 'art', artFields),
+    topPendant: region('顶栏下方 · 挂件', 'decorations', '#top-settings-holder', 'art', {
+        url: image.url, sizePx: number('挂件宽度', 24, 260, 'px', 92),
+        height: number('挂件高度', 16, 200, 'px', 68),
+        align: choices('对齐', { left: '靠左', center: '居中', right: '靠右' }),
+        imageOpacity: image.imageOpacity,
+    }),
+    ...Object.fromEntries(frameSections),
     sticker: region('右下角贴纸', 'decorations', '#sheld', 'art', artFields),
     divider: region('消息装饰分隔线', 'decorations', '#chat .mes + .mes .mes_text', 'art', artFields),
     launcher: region('自定义入口', 'runtime', '', 'runtime', {
@@ -141,18 +156,6 @@ const extraSections = {
         bottomLabel: text('返回底部按钮名称', 18),
         themeLabel: text('换主题按钮名称', 18),
         moreLabel: text('更多菜单名称', 18),
-    }),
-    egg: region('界面彩蛋', 'runtime', '', 'runtime', {
-        enabled: choices('彩蛋', onOff),
-        target: choices('触发位置', { top: '顶栏', chat: '聊天区', avatar: '角色头像', send: '发送按钮' }),
-        trigger: choices('触发方式', { click: '单击', double: '双击', hold: '长按' }),
-        text: text('展示文字', 140),
-        url: { label: '贴纸或动画图片 URL', type: 'url' },
-        effect: choices('动画', { none: '瞬间显示', fade: '淡入淡出', ripple: '涟漪' }),
-        location: choices('出现位置', { center: '聊天区中央', top: '聊天区顶部', bottom: '聊天区底部' }),
-        duration: number('持续时间', 1, 10, '秒', 3),
-        once: choices('每次页面会话只播放一次', onOff),
-        sound: choices('提示音', onOff),
     }),
     messageInfo: region('消息信息显隐', 'messages', '', 'messageInfo', {
         time: choices('时间戳', visibility), number: choices('消息编号', visibility),
@@ -172,7 +175,7 @@ const extraSections = {
 
 export const GROUPS = {
     buttons: '按钮与图标', messages: '消息与头像', panels: '面板与菜单',
-    details: '全局细节', decorations: '封面与装饰', runtime: '入口与彩蛋',
+    details: '全局细节', decorations: '封面与装饰', runtime: '入口与场景',
 };
 
 export const SECTIONS = {
@@ -317,20 +320,18 @@ function background(v, section) {
     return css;
 }
 
-function imageRules(selector, v) {
-    if (v.url === undefined) return '';
+function imageRules(selector, v, edges) {
+    if (v.url === undefined && !edges) return '';
     const base = rule(selector, { 'background-image': 'none' });
     const layer = {
         content: '""', position: 'absolute', inset: '0',
         'pointer-events': 'none', 'border-radius': 'inherit', 'z-index': '-1',
     };
+    const picture = v.url ? 'url(' + cssString(v.url) + ') ' + (v.position ?? 'center') + ' / ' + (v.size ?? 'cover') + ' no-repeat' : '';
+    layer.background = [...(edges ?? []), picture].filter(Boolean).join(', ') || 'none';
     if (v.url) {
-        layer.background = 'url(' + cssString(v.url) + ') ' +
-            (v.position ?? 'center') + ' / ' + (v.size ?? 'cover') + ' no-repeat';
         layer.filter = 'brightness(' + (100 - (v.mask ?? 0)) + '%)';
         layer.opacity = (v.imageOpacity ?? 100) / 100;
-    } else {
-        layer.background = 'none';
     }
     // The sticky layer stays at the top of the native chat scrollport. Its
     // negative margin cancels its flex size, leaving message flow untouched.
@@ -341,10 +342,8 @@ function imageRules(selector, v) {
         });
         let result = base + rule(selector, { 'container-type': 'size', isolation: 'isolate' }) +
             rule(selector + '::before', layer);
-        if (v.url) result += '@supports not (height: 1cqh) {\n' + rule(selector, {
-            'background-image': 'url(' + cssString(v.url) + ')',
-            'background-size': v.size ?? 'cover', 'background-position': v.position ?? 'center',
-            'background-repeat': 'no-repeat',
+        if (picture || edges) result += '@supports not (height: 1cqh) {\n' + rule(selector, {
+            background: layer.background,
         }) + rule(selector + '::before', { content: 'none' }) + '}\n';
         return result;
     }
@@ -491,6 +490,25 @@ function detailsRules(v) {
     return css;
 }
 
+function chatFrameLayers(template, device) {
+    const layers = [];
+    let configured = false;
+    for (const [key] of frameSections) {
+        const v = effectiveFields(template, device, key);
+        if (v.url !== undefined) configured = true;
+        if (!v.url) continue;
+        const side = key.slice('chatFrame'.length);
+        const horizontal = side === 'top' || side === 'bottom';
+        const thickness = 'min(' + (v.sizePx ?? 38) + 'px, ' + (horizontal ? '14vh' : '15vw') + ')';
+        const stretch = v.repeat === 'stretch';
+        const size = horizontal ? (stretch ? '100%' : 'auto') + ' ' + thickness
+            : thickness + ' ' + (stretch ? '100%' : 'auto');
+        const repeat = stretch ? 'no-repeat' : horizontal ? 'repeat-x' : 'repeat-y';
+        layers.push('url(' + cssString(v.url) + ') ' + side + ' center / ' + size + ' ' + repeat);
+    }
+    return configured ? layers : undefined;
+}
+
 function decorationRules(section, selector, v) {
     if (v.url === undefined && v.text === undefined) return '';
     const art = {
@@ -554,6 +572,19 @@ function extraRules(section, v, device) {
     }
     if (kind === 'panel') return panelRules(section, selector, v, device);
     if (kind === 'details') return detailsRules(v);
+    if (section === 'topPendant') {
+        if (v.url === undefined) return '';
+        return rule(selector + '::after', {
+            content: '""', position: 'absolute', top: '100%', 'pointer-events': 'none',
+            left: v.align === 'right' ? 'auto' : v.align === 'left' ? '4px' : '50%',
+            right: v.align === 'right' ? '4px' : 'auto',
+            transform: v.align === 'right' || v.align === 'left' ? 'none' : 'translateX(-50%)',
+            width: 'min(' + (v.sizePx ?? 92) + 'px, 65vw)',
+            height: 'min(' + (v.height ?? 68) + 'px, 22vh)',
+            background: v.url ? 'url(' + cssString(v.url) + ') center top / contain no-repeat' : 'none',
+            opacity: (v.imageOpacity ?? 100) / 100,
+        });
+    }
     if (kind === 'art') return decorationRules(section, selector, v);
     return '';
 }
@@ -591,7 +622,8 @@ function layoutRules(template, device, runtime) {
         const pane = section === 'chat' || section === 'input';
         const v = effectiveFields(template, device, section);
         const sizedTop = section === 'top' && ['width', 'maxWidth', 'marginX'].some(key => v[key] !== undefined);
-        if (device === 'mobile' && !template.mobile[section] && !(expanded && pane) && !sizedTop) continue;
+        const edgeOverride = section === 'chat' && frameSections.some(([key]) => template.mobile[key]);
+        if (device === 'mobile' && !template.mobile[section] && !(expanded && pane) && !sizedTop && !edgeOverride) continue;
         if (device === 'mobile' && sizedTop) css += rule('#top-bar, #top-settings-holder', { '--tle-native-width': '100%' });
         if (device === 'mobile' && expanded && pane) css += rule(targets[section], { '--tle-native-width': '100%' });
         if (section === 'page') {
@@ -606,7 +638,7 @@ function layoutRules(template, device, runtime) {
         } else {
             css += boxRules(section, v, expanded && pane);
         }
-        css += imageRules(targets[section], v);
+        css += imageRules(targets[section], v, section === 'chat' ? chatFrameLayers(template, device) : undefined);
     }
     for (const [key, [, selector]] of Object.entries(buttons)) {
         if (key === 'topButton' || (key === 'bottomButton' && !runtime)) continue;
