@@ -1,0 +1,189 @@
+#tle-editor {
+    position: fixed;
+    z-index: 6000;
+    inset: 48px 12px auto auto;
+    width: min(450px, calc(100dvw - 24px));
+    max-height: calc(100dvh - 115px);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px;
+    box-sizing: border-box;
+    color: var(--SmartThemeBodyColor, #eee);
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor, #202027) 60%, #202027);
+    border: 1px solid var(--SmartThemeBorderColor, #777);
+    border-radius: 12px;
+    box-shadow: 0 8px 30px #0009;
+    font-size: 14px;
+    line-height: 1.35;
+}
+
+#tle-editor h2 { margin: 0; font-size: 18px; }
+#tle-editor .tle-status { overflow-wrap: anywhere; }
+#tle-editor [data-dirty="true"] { color: #ffcb76; }
+#tle-editor .tle-body { overflow: auto; touch-action: pan-y; overscroll-behavior: contain; display: grid; gap: 8px; }
+#tle-editor .tle-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+#tle-editor .menu_button { margin: 0; width: auto; white-space: normal; }
+#tle-editor button[aria-pressed="true"],
+#tle-editor .tle-primary { background: #365368; color: white; }
+#tle-editor .tle-field { display: grid; grid-template-columns: minmax(88px, 1fr) minmax(42px, 1fr) 62px auto; gap: 5px; align-items: center; }
+#tle-editor .tle-field:has([type="color"]),
+#tle-editor .tle-field:has(select) { grid-template-columns: minmax(90px, 1fr) minmax(0, 2fr) auto; }
+#tle-editor .tle-url { grid-template-columns: 1fr auto auto; }
+#tle-editor .tle-url label { grid-column: 1 / -1; }
+#tle-editor :is(input, select) { width: 100%; min-width: 0; box-sizing: border-box; margin: 0; }
+#tle-editor [type="range"] { touch-action: pan-y; }
+#tle-editor .tle-thumbnail { max-width: 100%; height: 56px; object-fit: contain; justify-self: start; border-radius: 4px; }
+#tle-editor .tle-message:empty { display: none; }
+#tle-editor [aria-invalid="true"] { outline: 1px solid #fa897e; }
+#tle-editor hr { width: 100%; margin: 0; }
+#tle-menu { padding: 0; border: 0; width: 100%; background: transparent; text-align: start; cursor: pointer; align-items: center; }
+
+@media (max-width: 600px) {
+    #tle-editor {
+        position: absolute;
+        inset: auto 8px max(64px, calc(env(safe-area-inset-bottom) + 56px)) auto;
+        width: min(440px, calc(100dvw - 16px));
+        max-height: 58dvh;
+        padding: 9px;
+    }
+}
+
+#tle-editor .tle-pick { align-self: start; }
+#tle-editor[data-picking="true"] > :is(nav, footer, .tle-body, .tle-status, .tle-message) { display: none; }
+#tle-editor .tle-checkbox { display: flex; align-items: center; gap: 6px; }
+#tle-editor .tle-checkbox input { width: auto; }
+#tle-editor .tle-field:has([type="text"]) { grid-template-columns: minmax(88px, 1fr) minmax(0, 2fr) auto; }
+
+#tle-entry-list { display: inline-flex; align-items: center; gap: 4px; padding-inline: 3px; font-size: 12px; }
+#tle-entry-list > summary { cursor: pointer; }
+#tle-entry-list > div { position: absolute; bottom: 100%; left: 0; z-index: 2; padding: 4px; border-radius: 8px; background: var(--SmartThemeBlurTintColor); }
+#tle-entry-list .menu_button { min-width: max-content; padding-inline: 5px; margin: 0; }
+#tle-entry-list > div .menu_button { margin: 4px; }
+
+.tle-egg {
+    position: absolute;
+    z-index: 70;
+    left: 50%;
+    top: 45%;
+    translate: -50% -50%;
+    display: grid;
+    justify-items: center;
+    gap: 6px;
+    max-width: 78%;
+    padding: 10px 18px;
+    border-radius: 12px;
+    background: var(--SmartThemeBlurTintColor, #202027);
+    color: var(--SmartThemeBodyColor, #fff);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    text-align: center;
+    pointer-events: none;
+}
+.tle-egg img { max-width: 100%; max-height: 28vh; object-fit: contain; }
+.tle-egg[data-location="top"] { top: 10%; }
+.tle-egg[data-location="bottom"] { top: 75%; }
+.tle-egg[data-effect="fade"] { animation: tle-egg-fade var(--tle-egg-duration) both; }
+.tle-egg[data-effect="ripple"] { animation: tle-egg-fade var(--tle-egg-duration) both; }
+.tle-egg[data-effect="ripple"]::after {
+    position: absolute;
+    inset: 0;
+    content: "";
+    border: 2px solid currentColor;
+    border-radius: 50%;
+    animation: tle-egg-ripple var(--tle-egg-duration) ease-out both;
+}
+@keyframes tle-egg-fade { 0%, 100% { opacity: 0; } 16%, 76% { opacity: 1; } }
+@keyframes tle-egg-ripple { from { scale: .5; opacity: .7; } to { scale: 4; opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+    .tle-egg, .tle-egg::after { animation: none !important; }
+    .tle-egg::after { display: none; }
+}
+@media (max-width: 600px) {
+    #leftSendForm:has(#tle-entry-list) { max-width: 52%; }
+    #tle-entry-list:not(details) { flex-wrap: wrap; }
+}
+#tle-editor .tle-host { opacity: .75; }
+#tle-editor[data-picking="true"] > .tle-host { display: none; }
+
+#tle-editor .tle-partial > summary { cursor: pointer; font-weight: 600; }
+#tle-editor .tle-partial > :is(select, button, fieldset) { margin-top: 6px; }
+#tle-editor .tle-part-list { display: flex; flex-wrap: wrap; gap: 6px 12px; min-width: 0; }
+
+#chat .tle-meta-toggle { margin: 0 4px; width: auto; padding: 1px 5px; font-size: .75em; }
+#chat .tle-model-name { padding-inline: 4px; overflow-wrap: anywhere; }
+#tle-composer-more { display: grid; align-content: center; align-self: center; padding-inline: 4px; font-size: 12px; }
+#tle-composer-more summary { cursor: pointer; white-space: nowrap; }
+#tle-composer-more > div {
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    z-index: 3;
+    padding: 4px;
+    border-radius: 8px;
+    background: var(--SmartThemeBlurTintColor);
+}
+#tle-composer-more .menu_button { width: auto; white-space: nowrap; margin: 4px; }
+#nonQRFormItems > :is(#leftSendForm, #rightSendForm):has(> :is([data-tle-relocated], #tle-composer-more)) {
+    width: auto;
+    max-width: 43%;
+    flex-wrap: wrap;
+}
+#nonQRFormItems:has([data-tle-relocated], #tle-composer-more) #send_textarea {
+    min-width: 40px;
+}
+
+#tle-editor .tle-menu-field { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(0, 1fr); align-items: center; gap: 8px; }
+#tle-editor .tle-export-notice { overflow-wrap: anywhere; }
+#tle-editor .tle-export-notice ul { padding-inline-start: 20px; }
+:is(#extensionsMenu, #options) [data-tle-native-item] { order: var(--tle-native-order, 0); }
+:is(#extensionsMenu, #options) :is(.tle-native-old-label, .tle-native-old-icon) { display: none !important; }
+:is(#extensionsMenu, #options) .tle-menu-icon:not([hidden]) {
+    display: inline-block;
+    width: 1.2em;
+    height: 1.2em;
+    object-fit: contain;
+    pointer-events: none;
+    flex: 0 0 auto;
+}
+:is(#extensionsMenu, #options) .tle-menu-alias { overflow-wrap: anywhere; }
+:is(#extensionsMenu, #options) .tle-native-group {
+    grid-column: 1 / -1;
+    width: 100%;
+    padding: 5px 8px;
+    border-block-start: 1px solid var(--SmartThemeBorderColor);
+    color: var(--SmartThemeBodyColor);
+    background-color: var(--SmartThemeBlurTintColor);
+    opacity: 1;
+}
+:is(#extensionsMenu, #options) button.tle-native-group { cursor: pointer; text-align: start; }
+:is(#extensionsMenu, #options)[data-tle-menu-flow] hr { display: none; }
+:is(#extensionsMenu, #options):not([data-tle-more-open]) [data-tle-native-more] { display: none !important; }
+:is(#extensionsMenu, #options)[data-tle-menu-position] {
+    position: fixed !important;
+    inset: var(--tle-menu-y) auto auto var(--tle-menu-left) !important;
+    transform: none !important;
+    translate: -50% 0;
+}
+:is(#extensionsMenu, #options)[data-tle-menu-position="bottom"] { translate: -50% -100%; }
+:is(#extensionsMenu, #options)[data-tle-menu-position="center"] { translate: -50% -50%; }
+#extensionsMenu[data-tle-menu-flow] > :not(.extension_container,.tle-native-group,[data-tle-native-item]),
+#extensionsMenu[data-tle-menu-flow] > .extension_container > :not([data-tle-native-item]),
+#options[data-tle-menu-flow] .options-content > :not(.tle-native-group,[data-tle-native-item],hr) { order: 100000; }
+#extensionsMenu > .extension_container,
+#options .options-content { min-width: 0; }
+
+@media (max-height: 520px) {
+    #tle-editor:not([data-picking="true"]) {
+        inset: 8px 8px auto auto;
+        max-height: calc(100dvh - 16px);
+    }
+    #tle-editor .tle-host { display: none; }
+    #tle-editor .tle-tabs {
+        flex: 0 0 auto;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+    }
+    #tle-editor .tle-tabs button { flex: none; }
+    #tle-editor .tle-body { min-height: 0; }
+}
