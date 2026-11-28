@@ -1,4 +1,6 @@
-import { cleanMenus, compileMenuCss } from './menus.mjs';
+import { cleanLayoutLocks } from './ai-layout.mjs';
+import { normalizeInlineImage } from './image-assets.mjs';
+import { MENUS, cleanMenus, compileMenuCss } from './menus.mjs';
 
 export const FORMAT = 'sillytavern-layout-editor';
 export const VERSION = 1;
@@ -203,6 +205,27 @@ export function normalizeUrl(value) {
     return undefined;
 }
 
+export function normalizeImageSource(value) {
+    return normalizeUrl(value) ?? normalizeInlineImage(value);
+}
+
+export const MAX_MATERIAL_FAVORITES = 8;
+
+export function cleanMaterialFavorites(value) {
+    if (!Array.isArray(value)) return [];
+    const favorites = [];
+    const seen = new Set();
+    for (const entry of value) {
+        if (!record(entry)) continue;
+        const url = normalizeImageSource(entry.url);
+        if (!url || seen.has(url)) continue;
+        favorites.push({ url, label: cleanName(entry.label) || '未命名素材' });
+        if (favorites.length >= MAX_MATERIAL_FAVORITES) break;
+        seen.add(url);
+    }
+    return favorites;
+}
+
 export function cleanField(field, value) {
     switch (field.type) {
         case 'number':
@@ -216,7 +239,7 @@ export function cleanField(field, value) {
         case 'text':
             return typeof value === 'string' ? value.trim().slice(0, field.max) : undefined;
         case 'url':
-            return normalizeUrl(value);
+            return normalizeImageSource(value);
     }
 }
 
@@ -245,13 +268,33 @@ export function parseTemplate(data) {
         !cleanName(data.name) || !record(data.desktop) || (data.mobile !== undefined && !record(data.mobile))) {
         throw new Error('模板格式或版本不受支持');
     }
-    const menus = cleanMenus(data.menus, normalizeUrl);
+    const menus = cleanMenus(data.menus, normalizeImageSource);
+    const layoutLocks = cleanLayoutLocks(data.layoutLocks, SECTIONS);
     return {
         ...blankTemplate(cleanName(data.name)),
         desktop: cleanLayout(data.desktop),
         mobile: cleanLayout(data.mobile ?? {}),
         ...(Object.keys(menus).length ? { menus } : {}),
+        ...(layoutLocks.length ? { layoutLocks } : {}),
     };
+}
+
+export function applyMaterialBatch(template, source, positions, layers) {
+    const url = normalizeImageSource(source);
+    if (!url) throw new Error('请先选择照片或填写有效的 HTTPS 图片链接。');
+    const next = structuredClone(template);
+    for (const layer of layers) {
+        if (layer !== 'desktop' && layer !== 'mobile') continue;
+        for (const position of positions) {
+            if (Object.hasOwn(SECTIONS, position) && SECTIONS[position].fields.url) {
+                (next[layer][position] ??= {}).url = url;
+            } else if (position.startsWith('menus.') && Object.hasOwn(MENUS, position.slice(6))) {
+                const menu = (next.menus ??= {})[position.slice(6)] ??= {};
+                ((menu[layer] ??= {}).panel ??= {}).background = url;
+            }
+        }
+    }
+    return next;
 }
 
 export function applyTemplateParts(destination, source, groups) {
@@ -283,6 +326,40 @@ export function applyTemplateParts(destination, source, groups) {
         }
     }
     return target;
+}
+
+export function equalSettings(left, right) {
+    if (left === right) return true;
+    if (Array.isArray(left) !== Array.isArray(right) || !left || !right ||
+        typeof left !== 'object' || typeof right !== 'object') return false;
+    const keys = Object.keys(left);
+    return keys.length === Object.keys(right).length &&
+        keys.every(key => Object.hasOwn(right, key) && equalSettings(left[key], right[key]));
+}
+
+export function getLayoutReview(before, after) {
+    const changes = { desktop: [], mobile: [], sharedMenus: [] };
+    const fieldChanges = (a, b) => [...new Set([...Object.keys(a ?? {}), ...Object.keys(b ?? {})])]
+        .filter(key => !equalSettings(a?.[key], b?.[key]))
+        .map(key => ({ key, from: a?.[key], to: b?.[key] }));
+    for (const layer of ['desktop', 'mobile']) {
+        for (const section of Object.keys(SECTIONS)) {
+            const fields = fieldChanges(before[layer][section], after[layer][section]);
+            if (fields.length) changes[layer].push({ section, fields });
+        }
+        for (const menu of ['global', ...Object.keys(MENUS)]) {
+            const a = before.menus?.[menu]?.[layer];
+            const b = after.menus?.[menu]?.[layer];
+            const fields = ['panel', 'entry', 'itemStyle'].flatMap(area =>
+                fieldChanges(a?.[area], b?.[area]).map(field => ({ ...field, area })));
+            const itemCount = fieldChanges(a?.items, b?.items).length;
+            if (fields.length || itemCount) changes[layer].push({ menu, fields, itemCount });
+        }
+    }
+    for (const menu of Object.keys(MENUS)) {
+        if (!equalSettings(before.menus?.[menu]?.groups, after.menus?.[menu]?.groups)) changes.sharedMenus.push(menu);
+    }
+    return changes;
 }
 
 export function effectiveFields(template, device, section) {

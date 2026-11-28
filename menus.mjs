@@ -3,7 +3,7 @@ export const MENUS = {
     chat: { label: '聊天操作菜单', trigger: '#options_button', panel: '#options', content: '#options > .options-content' },
 };
 
-const fields = {
+export const menuNumberRanges = {
     width: [180, 720], height: [120, 900], columns: [1, 3], gap: [0, 32], opacity: [10, 100],
     radius: [0, 48], textSize: [10, 26], order: [1, 999],
 };
@@ -19,8 +19,8 @@ export function cleanMenus(value, url) {
         const result = {};
         for (const key of accepted) {
             const item = raw?.[key];
-            if (fields[key] && Number.isFinite(item)) {
-                const [min, max] = fields[key];
+            if (menuNumberRanges[key] && Number.isFinite(item)) {
+                const [min, max] = menuNumberRanges[key];
                 result[key] = Math.min(max, Math.max(min, Math.round(item)));
             } else if (['fill', 'color'].includes(key) && typeof item === 'string' && color.test(item)) {
                 result[key] = item.toLowerCase();

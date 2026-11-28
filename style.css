@@ -346,3 +346,156 @@
 #tle-editor .tle-appearance-tools, #tle-editor .tle-appearance-results { display: grid; gap: 5px; }
 #tle-editor .tle-appearance-results button { justify-content: start; text-align: start; }
 #tle-editor .tle-field-state { display: block; font-size: 11px; }
+
+#tle-editor .tle-ui-shortcuts, #tle-editor .tle-history-controls {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+#tle-editor .tle-ui-shortcuts { justify-content: space-between; padding-top: 4px; }
+#tle-editor .tle-history-controls button { min-height: 32px; padding-inline: 8px; }
+#tle-editor .tle-history-controls button:disabled { opacity: .42; cursor: default; }
+#tle-editor[data-picking=true] .tle-history-controls { display: none; }
+
+#tle-editor .tle-photo-tools { grid-column: 1 / -1; display: inline-flex; }
+#tle-editor .tle-url .tle-photo-tools { grid-row: 3; }
+
+#tle-editor .tle-group-controls { display: grid; gap: 8px; }
+#tle-editor .tle-quick-appearance { scroll-margin-block: 8px; }
+
+#tle-editor .tle-ai-layout textarea {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 5rem;
+    resize: vertical;
+    font-size: max(16px, 1em);
+}
+
+#tle-editor .tle-ai-results fieldset {
+    margin: .5rem 0;
+    min-inline-size: 0;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: .5rem;
+}
+
+#tle-editor .tle-ai-layout ul {
+    margin-block: .4rem;
+    padding-inline-start: 1.3rem;
+}
+
+#tle-editor .tle-ai-layout li .menu_button {
+    display: inline-flex;
+    margin-inline-start: .4rem;
+}
+
+#tle-editor:not([data-ai-stage=true]) :is(.tle-ai-return, .tle-ai-compare) { display: none; }
+#tle-editor[data-ai-stage=true] {
+    z-index: 30000;
+    inset: auto max(8px, env(safe-area-inset-right, 0px)) max(8px, env(safe-area-inset-bottom, 0px)) auto;
+    width: max-content;
+    height: auto;
+    border-radius: 12px;
+}
+#tle-editor[data-ai-stage=true] :is(.tle-title-row, .tle-tabs, .tle-pick, .tle-history-controls, .tle-body, .tle-message, footer) { display: none; }
+#tle-editor[data-ai-stage=true] .tle-ui-header { padding: 6px; border: 0; }
+
+#tle-editor .tle-field > .tle-ai-lock {
+    grid-column: 2 / -1;
+    justify-self: end;
+}
+
+#tle-editor .tle-ai-lock {
+    align-self: end;
+    min-height: 30px;
+    padding-block: 3px;
+    font-size: 12px;
+}
+
+#tle-editor .tle-ai-results details .tle-checkbox {
+    display: flex;
+    margin-block: .3rem;
+}
+
+#tle-editor .tle-ai-results .tle-actions { margin-block: .5rem; }
+#tle-editor .tle-ai-field-change {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(64px, 22%);
+    align-items: center;
+    gap: 8px;
+}
+
+#tle-editor .tle-menu-thumbnail {
+    max-width: 100%;
+    max-height: 150px;
+    object-fit: contain;
+    object-position: left;
+    border-radius: 8px;
+}
+
+#tle-editor .tle-material-shelf-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+    gap: 6px;
+}
+#tle-editor .tle-material-shelf-list button {
+    flex-direction: column;
+    gap: 4px;
+    min-height: 44px;
+}
+#tle-editor .tle-material-shelf-list img {
+    width: 100%;
+    height: 42px;
+    object-fit: contain;
+}
+
+#tle-editor .tle-material-batch-targets {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+    gap: 5px 8px;
+}
+#tle-editor .tle-material-batch-targets label {
+    min-height: 34px;
+}
+
+#tle-editor .tle-material-index-filters {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(115px, .65fr);
+    gap: 6px;
+}
+#tle-editor .tle-material-index-results {
+    display: grid;
+    gap: 4px;
+    max-height: min(42dvh, 280px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+#tle-editor .tle-material-index-results .menu_button {
+    justify-content: space-between;
+    gap: 8px;
+    text-align: start;
+}
+#tle-editor .tle-material-state {
+    flex-shrink: 0;
+    text-align: end;
+}
+#tle-editor .tle-material-shelf-card {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+}
+#tle-editor .tle-material-shelf-card > button {
+    overflow-wrap: anywhere;
+}
+#tle-editor .tle-material-shelf-card > button + button {
+    min-height: 36px;
+}
+
+#tle-editor .tle-ui-shortcuts { flex-wrap: wrap; }
+#tle-editor .tle-review-list {
+    margin: 0;
+    padding-inline-start: 1.3rem;
+    overflow-wrap: anywhere;
+}
+#tle-editor .tle-review-list li + li { margin-block-start: 5px; }
