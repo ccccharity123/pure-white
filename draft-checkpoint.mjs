@@ -39,3 +39,5 @@ export function restoreCheckpointSettings(saved, checkpoint) {
     if (Object.keys(templates).length > templateLimit) throw new Error('模板数量已达到上限。');
     return { active: checkpoint.active, templates };
 }
+
+

@@ -47,3 +47,5 @@ export function searchWorkbench(entries, query) {
     }).sort((a, b) => a.rank - b.rank || Number(Boolean(a.entry.legacy)) - Number(Boolean(b.entry.legacy)))
         .map(({ entry }) => entry);
 }
+
+

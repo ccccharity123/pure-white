@@ -13,7 +13,7 @@ import { createMenuRuntime } from './menu-runtime.js';
 import { createMenuEditor } from './menu-editor.js';
 import { MENUS, MENU_STYLE_FIELDS, menuView } from './menus.mjs';
 import { createCustomization } from './customization.js';
-import { BREAKPOINT, GROUPS, MAX_MATERIAL_FAVORITES, SECTIONS, applyMaterialBatch, applyTemplateParts, blankTemplate, cleanField, cleanMaterialFavorites, cleanName, compileCss, effectiveFields, equalSettings, findMaterialUses, getLayoutReview, getShareSummary, groupMaterialUses, matchScene, materialImage, mergeTheme, normalizeUrl, parseTemplate, replaceMaterialUses, restoreReviewFields } from './model.mjs';
+import { BREAKPOINT, GROUPS, MAX_MATERIAL_FAVORITES, SECTIONS, THEME_PRESETS, applyMaterialBatch, applyTemplateParts, blankTemplate, buildThemePreset, cleanField, cleanMaterialFavorites, cleanName, compileCss, effectiveFields, equalSettings, findMaterialUses, getLayoutReview, getShareSummary, groupMaterialUses, matchScene, materialImage, mergeTheme, normalizeUrl, parseTemplate, replaceMaterialUses, restoreReviewFields } from './model.mjs';
 
 const KEY = 'tavern_layout_editor';
 const TITLE = '纯白';
@@ -122,6 +122,7 @@ async function persistEditorSettings(settings, revision, checkpoint) {
     const accept = () => { acknowledged = true; };
     applying = true;
     origin.inert = true;
+    origin.classList.add('tle-applying');
     eventSource.on(event_types.SETTINGS_UPDATED, accept);
     extension_settings[KEY] = next;
     try {
@@ -135,6 +136,7 @@ async function persistEditorSettings(settings, revision, checkpoint) {
     } finally {
         eventSource.removeListener(event_types.SETTINGS_UPDATED, accept);
         origin.inert = false;
+        origin.classList.remove('tle-applying');
         applying = false;
     }
 }
@@ -470,7 +472,10 @@ function renderField(key, field, rerender = renderBody) {
             input.spellcheck = false;
             input.autocomplete = 'off';
             input.setAttribute('aria-invalid', String(invalidUrls.has(urlKey)));
-            input.addEventListener('input', () => {
+            let urlDebounce;
+            const commitUrl = () => {
+                clearTimeout(urlDebounce);
+                urlDebounce = undefined;
                 const clean = normalizeUrl(input.value);
                 input.setAttribute('aria-invalid', String(clean === undefined));
                 if (clean === undefined) {
@@ -481,6 +486,16 @@ function renderField(key, field, rerender = renderBody) {
                     invalidUrls.delete(urlKey);
                     changeField(key, clean || undefined);
                 }
+            };
+            input.addEventListener('input', () => {
+                // 仅立刻校验格式提示；真正触发图片加载/保存前等待输入停顿，
+                // 避免用户逐字输入网址时反复发起无效的图片请求。
+                input.setAttribute('aria-invalid', String(normalizeUrl(input.value) === undefined));
+                clearTimeout(urlDebounce);
+                urlDebounce = setTimeout(commitUrl, 350);
+            });
+            input.addEventListener('blur', () => {
+                if (urlDebounce !== undefined) commitUrl();
             });
         }
     }
@@ -724,7 +739,33 @@ function renderTemplates() {
         management.scrollIntoView({ block: 'nearest' });
     }), button('导入模板', () => file.click()), themeFlowButton());
     templateCard.append(element('h3', '当前模板'), select, toolbar);
-    body.append(file, templateCard, renderSharing(), management, renderPartialApply());
+    body.append(file, templateCard, renderThemePresets(), renderSharing(), management, renderPartialApply());
+}
+
+function renderThemePresets() {
+    const card = element('section', '', 'tle-edit-card tle-theme-presets');
+    card.append(element('h3', '内置简洁模板'), element('small', '一键新建一份现成的配色，新建后可继续调整，不影响其他模板。'));
+    const list = element('div', '', 'tle-theme-preset-list');
+    for (const preset of THEME_PRESETS) {
+        const item = element('div', '', 'tle-theme-preset');
+        const swatch = element('span', '', 'tle-theme-preset-swatch');
+        swatch.dataset.preset = preset.key;
+        const info = element('div');
+        info.append(element('strong', preset.label), element('small', preset.description));
+        const use = button('新建为模板', () => {
+            try {
+                const newName = availableCopyName(preset.label, '模板');
+                addTemplate(buildThemePreset(preset.key, newName));
+                setMessage('已新建「' + newName + '」，可继续调整，保存后生效。');
+            } catch (error) {
+                setMessage(error.message);
+            }
+        });
+        item.append(swatch, info, use);
+        list.append(item);
+    }
+    card.append(list);
+    return card;
 }
 
 function renderSharing() {
@@ -973,6 +1014,93 @@ function renderAppearanceFields(descriptor, materials = false, container = body,
     container.append(card);
 }
 
+function aiApiSettings() {
+    try {
+        return JSON.parse(localStorage.getItem('tle-ai-api') ?? '{}') ?? {};
+    } catch {
+        return {};
+    }
+}
+
+function saveAiApiSettings(next) {
+    try {
+        localStorage.setItem('tle-ai-api', JSON.stringify(next));
+    } catch {
+        // 本地存储不可用时，直接调用功能会在使用时再次报错，这里不中断渲染。
+    }
+}
+
+async function requestAiLayout(promptText, settings) {
+    const endpoint = settings.endpoint?.trim() || 'https://api.openai.com/v1/chat/completions';
+    if (!settings.key?.trim()) throw new Error('请先填写 API Key。');
+    const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer ' + settings.key.trim(),
+        },
+        body: JSON.stringify({
+            model: settings.model?.trim() || 'gpt-4o-mini',
+            messages: [{ role: 'user', content: promptText }],
+            temperature: 0.2,
+        }),
+    });
+    if (!response.ok) {
+        const detail = await response.text().catch(() => '');
+        throw new Error('AI 接口返回 ' + response.status + '，' + (detail.slice(0, 200) || '请检查 Key 和端点。'));
+    }
+    const data = await response.json();
+    const text = data?.choices?.[0]?.message?.content;
+    if (!text) throw new Error('AI 接口没有返回可用内容。');
+    return text;
+}
+
+function shouldShowOnboarding() {
+    try {
+        return localStorage.getItem('tle-onboarded') !== '1';
+    } catch {
+        return false;
+    }
+}
+
+function dismissOnboarding() {
+    try {
+        localStorage.setItem('tle-onboarded', '1');
+    } catch {
+        // 无法写入本地存储时直接放行，不强行重复展示即可。
+    }
+}
+
+function shouldShowMobileHint() {
+    try {
+        return localStorage.getItem('tle-mobile-hint-seen') !== '1';
+    } catch {
+        return false;
+    }
+}
+
+function dismissMobileHint() {
+    try {
+        localStorage.setItem('tle-mobile-hint-seen', '1');
+    } catch {
+        // 同上，写入失败时不强行重复提示。
+    }
+}
+
+function renderOnboarding() {
+    const card = element('section', '', 'tle-edit-card tle-onboarding');
+    card.append(element('h3', '欢迎使用「纯白」'));
+    card.append(element('p', '可以先选一套内置预设试试效果，再按需要精调；也可以直接跳过，自己摸索每一处设置。'));
+    const actions = element('div', '', 'tle-actions');
+    actions.append(
+        button('看看预设排版', () => { dismissOnboarding(); page = 'ai'; renderBody(); }),
+        button('打开快速定位', () => { dismissOnboarding(); toggleWorkbench(); }),
+        button('我知道了，不用再提示', () => { dismissOnboarding(); renderBody(); }),
+    );
+    card.append(actions);
+    return card;
+}
+
 function editorLink(label, target) {
     return button(label, () => {
         page = target;
@@ -1069,6 +1197,47 @@ function renderAiLayout() {
             setMessage('提示词已选中，可用系统菜单复制。');
         }
     });
+
+    const apiFlow = element('details', '', 'tle-ui-disclosure tle-ai-direct');
+    const apiSummary = element('summary', '直接请求 AI 生成（可选，需自备 Key）');
+    const apiSaved = aiApiSettings();
+    const endpointInput = element('input', '', 'text_pole');
+    endpointInput.type = 'text';
+    endpointInput.placeholder = 'https://api.openai.com/v1/chat/completions（默认）';
+    endpointInput.value = apiSaved.endpoint || '';
+    endpointInput.setAttribute('aria-label', 'AI 接口地址');
+    const modelInput = element('input', '', 'text_pole');
+    modelInput.type = 'text';
+    modelInput.placeholder = '模型名称，默认 gpt-4o-mini';
+    modelInput.value = apiSaved.model || '';
+    modelInput.setAttribute('aria-label', 'AI 模型名称');
+    const keyInput = element('input', '', 'text_pole');
+    keyInput.type = 'password';
+    keyInput.placeholder = 'API Key（只保存在本机浏览器）';
+    keyInput.value = apiSaved.key || '';
+    keyInput.autocomplete = 'off';
+    keyInput.setAttribute('aria-label', 'AI API Key');
+    const persistApiFields = () => saveAiApiSettings({ endpoint: endpointInput.value.trim(), model: modelInput.value.trim(), key: keyInput.value });
+    for (const field of [endpointInput, modelInput, keyInput]) field.addEventListener('change', persistApiFields);
+    const requestButton = button('直接生成排版', async () => {
+        persistApiFields();
+        requestButton.disabled = true;
+        setMessage('正在请求 AI 生成排版…');
+        try {
+            const text = await requestAiLayout(layoutPrompt(current(), SECTIONS, goal.value), aiApiSettings());
+            inputRevision++;
+            source.value = text;
+            apiFlow.open = false;
+            checkSource(true);
+        } catch (error) {
+            setMessage(error.message || 'AI 请求失败，请检查网络、Key 或端点。');
+        } finally {
+            requestButton.disabled = false;
+        }
+    });
+    apiFlow.append(apiSummary,
+        element('small', 'Key 只存在本机浏览器里，不会随主题分享或酒馆设置同步，也不经过本插件以外的服务器。'),
+        endpointInput, modelInput, keyInput, requestButton);
 
     const locks = element('details', '', 'tle-ui-disclosure');
     const keyList = element('select', '', 'text_pole');
@@ -1335,7 +1504,7 @@ function renderAiLayout() {
         }));
     }
     card.append(element('h3', '导入 AI 排版'), element('small', '也可用内置排版直接试套'), presets,
-        promptTools, source, file, importTools,
+        promptTools, apiFlow, source, file, importTools,
         results, locks, editorLink('返回界面外观', 'appearance'));
     body.append(card);
     if (session.proposal.length) review();
@@ -2021,6 +2190,15 @@ function renderAppearanceNavigation() {
         devices.append(control);
     }
     body.append(devices);
+    if (device === 'mobile' && shouldShowMobileHint()) {
+        const hint = element('section', '', 'tle-edit-card tle-mobile-hint');
+        hint.append(element('p', '手机设置默认继承桌面：留空就跟桌面一样，填了才会单独覆盖手机。'));
+        hint.append(button('知道了', () => {
+            dismissMobileHint();
+            renderBody();
+        }));
+        body.append(hint);
+    }
     const map = element('div', '', 'tle-appearance-map');
     map.setAttribute('role', 'group');
     map.setAttribute('aria-label', '酒馆外观示意图');
@@ -2548,8 +2726,25 @@ function renderParkedDraft() {
     return card;
 }
 
+function workbenchSeen() {
+    try {
+        return localStorage.getItem('tle-workbench-seen') === '1';
+    } catch {
+        return true;
+    }
+}
+
+function markWorkbenchSeen() {
+    try {
+        localStorage.setItem('tle-workbench-seen', '1');
+    } catch {
+        // 无法写入本地存储（例如隐私模式）时，不再重复提示即可，不影响功能。
+    }
+}
+
 function toggleWorkbench() {
     if (photoPending()) return setMessage('正在处理照片，请稍候。');
+    markWorkbenchSeen();
     if (page === 'workbench') {
         page = workbenchReturn;
         renderBody();
@@ -2788,6 +2983,7 @@ function renderBody() {
         const checkpoint = renderParkedDraft();
         if (checkpoint && !pickedMenu) body.prepend(checkpoint);
         pickedMenu = false;
+        if (shouldShowOnboarding()) body.prepend(renderOnboarding());
         return;
     }
     renderAppearanceNavigation();
@@ -3029,9 +3225,11 @@ function openEditor(initial) {
     }, 'menu_button tle-pick');
     const header = element('header', '', 'tle-ui-header');
     const titleRow = element('div', '', 'tle-title-row');
-    const quick = button('快速定位', toggleWorkbench, 'menu_button tle-workbench-launch');
+    const quick = button('快速定位', toggleWorkbench, 'menu_button tle-workbench-launch tle-primary');
     quick.setAttribute('aria-keyshortcuts', 'Control+K Meta+K');
-    titleRow.append(heading, status, quick);
+    const quickHint = element('small', '⌘/Ctrl+K 随时呼出', 'tle-workbench-hint');
+    quickHint.hidden = workbenchSeen();
+    titleRow.append(heading, status, quick, quickHint);
     const shortcuts = element('div', '', 'tle-ui-shortcuts');
     const historyControls = element('div', '', 'tle-history-controls');
     const undo = button('撤销', () => stepHistory(-1));
@@ -3150,3 +3348,5 @@ export function disable() {
     ready = false;
     images.clear();
 }
+
+

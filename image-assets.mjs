@@ -73,6 +73,10 @@ async function readPhoto(file) {
 export function createPhotoPicker({ onSelect, setMessage, label, urlInput, canSelect, successMessage = '已载入本地照片，保存后保留。' }) {
     const tools = document.createElement('span');
     tools.className = 'tle-photo-tools';
+    const spinner = document.createElement('span');
+    spinner.className = 'tle-spinner';
+    spinner.setAttribute('aria-hidden', 'true');
+    spinner.hidden = true;
     const picker = document.createElement('input');
     picker.type = 'file';
     picker.accept = 'image/*';
@@ -92,6 +96,7 @@ export function createPhotoPicker({ onSelect, setMessage, label, urlInput, canSe
         if (!file || tools.hasAttribute('data-tle-photo-pending')) return;
         tools.dataset.tlePhotoPending = 'true';
         choose.disabled = urlInput.disabled = true;
+        spinner.hidden = false;
         setMessage('正在处理照片…');
         try {
             const image = await readPhoto(file);
@@ -105,9 +110,12 @@ export function createPhotoPicker({ onSelect, setMessage, label, urlInput, canSe
             if (tools.isConnected) setMessage(error.message || '无法处理照片。');
         } finally {
             delete tools.dataset.tlePhotoPending;
+            spinner.hidden = true;
             choose.disabled = urlInput.disabled = false;
         }
     });
-    tools.append(picker, choose);
+    tools.append(picker, choose, spinner);
     return tools;
 }
+
+

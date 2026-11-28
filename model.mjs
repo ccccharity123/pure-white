@@ -268,6 +268,80 @@ export function blankTemplate(name = '默认布局') {
     return { format: FORMAT, version: VERSION, name, desktop: {}, mobile: {} };
 }
 
+const panelPresetKeys = ['charactersPanel', 'worldPanel', 'settingsPanel', 'extensionsPanel', 'popupPanel', 'wandMenu', 'optionsMenu'];
+
+function themeDesktop({ box: boxColors, bubble, avatarBorder, avatarShape, panel, details: detailsColors, buttons: buttonColors, font = 'system' }) {
+    const desktop = {
+        top: { color: boxColors.surface, opacity: 92, radius: 16 },
+        chat: { color: boxColors.surface, opacity: 88, radius: 20 },
+        input: { color: boxColors.surface, opacity: 94, radius: 18 },
+        page: { textColor: boxColors.text, fontSize: 15 },
+        userBubble: { ...bubble.user, align: 'right', padding: 12, gap: 10, color: boxColors.text, fontSize: 15, font, line: 150 },
+        characterBubble: { ...bubble.character, align: 'left', padding: 12, gap: 10, color: boxColors.text, fontSize: 15, font, line: 150 },
+        userAvatar: { shape: avatarShape, border: avatarBorder.user, borderWidth: 2 },
+        characterAvatar: { shape: avatarShape, border: avatarBorder.character, borderWidth: 2 },
+        buttonGroup: { ...buttonColors, radius: 10 },
+        details: { ...detailsColors, motion: 'fade', loadingMotion: 'pulse' },
+    };
+    for (const key of panelPresetKeys) desktop[key] = { ...panel };
+    return desktop;
+}
+
+export const THEME_PRESETS = [
+    {
+        key: 'clean-white', label: '简洁白', description: '白底浅灰，蓝色点缀，干净明亮。',
+        build: () => themeDesktop({
+            box: { surface: '#ffffff', text: '#1f2430' },
+            bubble: {
+                user: { fill: '#eef3ff', border: '#c7d6fb', borderWidth: 1, radius: 16 },
+                character: { fill: '#ffffff', border: '#e4e7ee', borderWidth: 1, radius: 16 },
+            },
+            avatarShape: 'circle',
+            avatarBorder: { user: '#c7d6fb', character: '#e4e7ee' },
+            panel: { fill: '#ffffff', opacity: 94, blur: 16, radius: 18 },
+            details: { scroll: '#c7d6fb', scrollTrack: '#f1f3f8', selection: '#cfe0ff', caret: '#4f7cff', separator: '#e4e7ee', tooltip: '#30364a', loader: '#4f7cff' },
+            buttons: { color: '#4f7cff', fill: '#eef3ff', hover: '#dde8ff', pressed: '#cfe0ff' },
+        }),
+    },
+    {
+        key: 'ink-dark', label: '墨黑', description: '深色界面，浅紫蓝点缀，长时间使用更护眼。',
+        build: () => themeDesktop({
+            box: { surface: '#14161c', text: '#e8e8ee' },
+            bubble: {
+                user: { fill: '#23262f', border: '#343845', borderWidth: 1, radius: 16 },
+                character: { fill: '#1b1d24', border: '#2b2e38', borderWidth: 1, radius: 16 },
+            },
+            avatarShape: 'circle',
+            avatarBorder: { user: '#343845', character: '#2b2e38' },
+            panel: { fill: '#1b1d24', opacity: 94, blur: 18, radius: 18 },
+            details: { scroll: '#4b4f5c', scrollTrack: '#1b1d24', selection: '#3a3f6b', caret: '#7c9cff', separator: '#2b2e38', tooltip: '#2b2e38', loader: '#7c9cff' },
+            buttons: { color: '#c8cdfb', fill: '#23262f', hover: '#2b2f3c', pressed: '#343845' },
+        }),
+    },
+    {
+        key: 'warm-paper', label: '暖纸', description: '米黄纸感，衬线字体，适合沉浸阅读的角色扮演。',
+        build: () => themeDesktop({
+            box: { surface: '#f7f1e6', text: '#4a3f33' },
+            bubble: {
+                user: { fill: '#f0e4cf', border: '#dfcba3', borderWidth: 1, radius: 14 },
+                character: { fill: '#fffaf0', border: '#ead9b9', borderWidth: 1, radius: 14 },
+            },
+            avatarShape: 'round',
+            avatarBorder: { user: '#dfcba3', character: '#ead9b9' },
+            panel: { fill: '#fffaf0', opacity: 94, blur: 10, radius: 16 },
+            details: { scroll: '#dab97e', scrollTrack: '#f0e4cf', selection: '#f0dba9', caret: '#b8793a', separator: '#ead9b9', tooltip: '#4a3f33', loader: '#b8793a' },
+            buttons: { color: '#8a5a2b', fill: '#f0e4cf', hover: '#ead9b9', pressed: '#dfcba3' },
+            font: 'serif',
+        }),
+    },
+];
+
+export function buildThemePreset(key, name) {
+    const preset = THEME_PRESETS.find(item => item.key === key);
+    if (!preset) throw new Error('未知的内置模板。');
+    return parseTemplate({ ...blankTemplate(name), desktop: preset.build() });
+}
+
 export function parseTemplate(data) {
     if (!record(data) || data.format !== FORMAT || data.version !== VERSION ||
         !cleanName(data.name) || !record(data.desktop) || (data.mobile !== undefined && !record(data.mobile))) {
@@ -920,3 +994,5 @@ export function mergeTheme(snapshot, template) {
     if (!replaced) customCss += (customCss ? '\n\n' : '') + block;
     return { ...snapshot, custom_css: customCss };
 }
+
+

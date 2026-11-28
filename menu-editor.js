@@ -306,12 +306,9 @@ export function createMenuEditor({ getTemplate, onChange, setMessage, getItems, 
 
     function renderAppearance(view) {
         const box = el('section', '', 'tle-edit-card tle-panel-card');
-        const title = el('h3', '菜单外观');
-        const targets = [['panel', '面板'], ['entry', '入口'], ['itemStyle', '项目风格'], ['global', '全局']];
-        box.append(title, segmented('外观对象', targets, styleTarget, key => {
-            styleTarget = key;
-            render(root, true);
-        }));
+        const targetLabels = { panel: '面板', entry: '入口', itemStyle: '项目风格', global: '全局' };
+        const title = el('h3', '菜单外观 · ' + (targetLabels[styleTarget] ?? ''));
+        box.append(title);
         const menuId = styleTarget === 'global' ? 'global' : id;
         const area = styleTarget === 'global' ? 'panel' : styleTarget;
         const effective = styleTarget === 'global' ? { ...model('global')?.desktop?.panel, ...(device === 'mobile' ? model('global')?.mobile?.panel : {}) } : view[area];
@@ -377,6 +374,19 @@ export function createMenuEditor({ getTemplate, onChange, setMessage, getItems, 
         const missing = Object.keys(view.items).filter(key => !known.has(key)).map(key => ({ key, label: key, missing: true }));
         return [...entries, ...missing].map((item, index) => ({ ...item, rank: menuRank(view, view.items[item.key] ?? {}, index) }))
             .sort((a, b) => Number(Boolean(a.missing)) - Number(Boolean(b.missing)) || a.rank - b.rank);
+    }
+
+    function reorderToEdge(items, view, key, toStart) {
+        const { group = '', pinned = false } = view.items[key] ?? {};
+        const peers = items.filter(item => !item.missing && (view.items[item.key]?.group ?? '') === group &&
+            Boolean(view.items[item.key]?.pinned) === pinned);
+        const index = peers.findIndex(item => item.key === key);
+        if (index < 0) return;
+        const [moved] = peers.splice(index, 1);
+        peers.splice(toStart ? 0 : peers.length, 0, moved);
+        for (const [rank, peer] of peers.entries()) settings(id, '', peer.key, true).order = rank + 1;
+        onChange();
+        render(root, true);
     }
 
     function reorder(items, view, key, direction) {
@@ -445,8 +455,12 @@ export function createMenuEditor({ getTemplate, onChange, setMessage, getItems, 
             const updated = menuView(getTemplate().menus, id, device === 'mobile');
             rowIcon.replaceChildren(...icon({ ...updated.itemStyle, ...updated.items[key] }, item).childNodes);
         }));
-        const order = actions(button('上移', () => reorder(items, view, key, -1)),
-            button('下移', () => reorder(items, view, key, 1)), button('恢复原图标', () => {
+        const order = actions(
+            button('移到最前', () => reorderToEdge(items, view, key, true)),
+            button('上移', () => reorder(items, view, key, -1)),
+            button('下移', () => reorder(items, view, key, 1)),
+            button('移到最后', () => reorderToEdge(items, view, key, false)),
+            button('恢复原图标', () => {
                 write(id, '', key, 'icon', '');
                 render(root, true);
             }));
@@ -484,16 +498,23 @@ export function createMenuEditor({ getTemplate, onChange, setMessage, getItems, 
             render(root);
         }));
         const tools = el('div', '', 'tle-menu-tools');
-        const appearanceButton = button('菜单外观', () => {
-            appearance = !appearance;
-            if (appearance) styleTarget = 'panel';
+        const appearanceTargets = [['panel', '面板'], ['entry', '入口'], ['itemStyle', '项目风格'], ['global', '全局']];
+        const appearanceQuick = segmented('菜单外观', appearanceTargets, appearance ? styleTarget : '', key => {
+            appearance = true;
+            styleTarget = key;
             render(root, true);
         });
-        appearanceButton.setAttribute('aria-expanded', String(appearance));
+        appearanceQuick.classList.add('tle-appearance-quick');
+        const closeAppearance = button('收起外观设置', () => {
+            appearance = false;
+            render(root, true);
+        }, 'menu_button tle-appearance-close');
+        closeAppearance.hidden = !appearance;
         tools.append(segmented('选择设备', Object.entries(sizes), device, key => {
             device = key;
             render(root, true);
-        }), actions(button('预览', event => onPreview(id, event)), appearanceButton));
+        }), actions(button('预览', event => onPreview(id, event)), closeAppearance));
+        tools.append(appearanceQuick);
         root.append(tools);
         const view = menuView(getTemplate().menus, id, device === 'mobile');
         if (appearance) root.append(renderAppearance(view));
@@ -578,3 +599,5 @@ export function createMenuEditor({ getTemplate, onChange, setMessage, getItems, 
 
     return { render, renderBackground, reset, select, setBackground, position, restorePosition };
 }
+
+
