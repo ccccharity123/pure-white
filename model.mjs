@@ -1,6 +1,6 @@
 import { cleanLayoutLocks } from './ai-layout.mjs';
-import { normalizeInlineImage } from './image-assets.mjs';
-import { MENUS, cleanMenus, compileMenuCss } from './menus.mjs';
+import { IMAGE_SIZE_OPTIONS, imagePosition, imageSize, normalizeInlineImage } from './image-assets.mjs';
+import { MENUS, cleanMenus, compileMenuCss, menuView, runtimeMenuFeatures } from './menus.mjs';
 
 export const FORMAT = 'sillytavern-layout-editor';
 export const VERSION = 1;
@@ -22,8 +22,11 @@ const box = (padding, margin) => ({
 });
 const image = {
     url: { label: '图片 URL', type: 'url' },
-    size: choices('图片缩放', { cover: '覆盖', contain: '完整显示', '100% 100%': '拉伸', auto: '原始大小' }),
+    size: choices('图片缩放', IMAGE_SIZE_OPTIONS),
     position: choices('图片位置', { center: '居中', top: '上方', bottom: '下方', left: '左侧', right: '右侧' }),
+    imageX: number('图片水平位置', -1, 100, '%', 50),
+    imageY: number('图片垂直位置', -1, 100, '%', 50),
+    imageScale: number('图片自定缩放', 0, 300, '%', 100),
     mask: number('黑色遮罩不透明度', 0, 100, '%', 25),
     imageOpacity: number('图片不透明度', 0, 100, '%', 80),
 };
@@ -147,6 +150,8 @@ const extraSections = {
     topPendant: region('顶栏下方 · 挂件', 'decorations', '#top-settings-holder', 'art', {
         url: image.url, sizePx: number('挂件宽度', 24, 260, 'px', 92),
         height: number('挂件高度', 16, 200, 'px', 68),
+        offsetX: number('挂件左右偏移', -180, 180, 'px', 0),
+        offsetY: number('挂件上下偏移', -100, 160, 'px', 0),
         align: choices('对齐', { left: '靠左', center: '居中', right: '靠右' }),
         imageOpacity: image.imageOpacity,
     }),
@@ -279,6 +284,70 @@ export function parseTemplate(data) {
     };
 }
 
+const materialKeys = [
+    ...Object.keys(SECTIONS).filter(key => SECTIONS[key].fields.url),
+    ...Object.keys(MENUS).map(id => 'menus.' + id),
+];
+
+export function materialImage(template, key, device) {
+    if (key.startsWith('menus.')) {
+        const id = key.slice(6);
+        return {
+            own: template.menus?.[id]?.[device]?.panel?.background,
+            effective: menuView(template.menus, id, device === 'mobile').panel.background,
+        };
+    }
+    return { own: template[device][key]?.url, effective: effectiveFields(template, device, key).url };
+}
+
+function writeMaterialImage(template, key, device, url) {
+    if (key.startsWith('menus.')) {
+        const menu = (template.menus ??= {})[key.slice(6)] ??= {};
+        ((menu[device] ??= {}).panel ??= {}).background = url;
+    } else {
+        (template[device][key] ??= {}).url = url;
+    }
+}
+
+export function groupMaterialUses(template) {
+    const images = new Map();
+    for (const device of ['desktop', 'mobile']) {
+        for (const key of materialKeys) {
+            const { own, effective } = materialImage(template, key, device);
+            if (!effective) continue;
+            if (!images.has(effective)) images.set(effective, []);
+            images.get(effective).push({ key, device, inherited: own === undefined });
+        }
+    }
+    return images;
+}
+
+export function findMaterialUses(template, url) {
+    return url ? groupMaterialUses(template).get(url) ?? [] : [];
+}
+
+export function replaceMaterialUses(template, original, source, selected) {
+    const url = normalizeImageSource(source);
+    if (!url) throw new Error('请先选择照片或填写有效的 HTTPS 图片链接。');
+    if (!original || original === url) return template;
+    const positions = new Map();
+    for (const { key, device } of selected) {
+        if (!materialKeys.includes(key) || !['desktop', 'mobile'].includes(device) ||
+            materialImage(template, key, device).effective !== original) continue;
+        if (!positions.has(key)) positions.set(key, new Set());
+        positions.get(key).add(device);
+    }
+    if (!positions.size) return template;
+    const next = structuredClone(template);
+    for (const [key, devices] of positions) {
+        const phoneUrl = devices.has('mobile') ? url : materialImage(template, key, 'mobile').effective;
+        if (devices.has('desktop')) writeMaterialImage(next, key, 'desktop', url);
+        // Preserve inheritance if the phone already receives the intended image from the desktop.
+        if (materialImage(next, key, 'mobile').effective !== phoneUrl) writeMaterialImage(next, key, 'mobile', phoneUrl);
+    }
+    return next;
+}
+
 export function applyMaterialBatch(template, source, positions, layers) {
     const url = normalizeImageSource(source);
     if (!url) throw new Error('请先选择照片或填写有效的 HTTPS 图片链接。');
@@ -286,12 +355,7 @@ export function applyMaterialBatch(template, source, positions, layers) {
     for (const layer of layers) {
         if (layer !== 'desktop' && layer !== 'mobile') continue;
         for (const position of positions) {
-            if (Object.hasOwn(SECTIONS, position) && SECTIONS[position].fields.url) {
-                (next[layer][position] ??= {}).url = url;
-            } else if (position.startsWith('menus.') && Object.hasOwn(MENUS, position.slice(6))) {
-                const menu = (next.menus ??= {})[position.slice(6)] ??= {};
-                ((menu[layer] ??= {}).panel ??= {}).background = url;
-            }
+            if (materialKeys.includes(position)) writeMaterialImage(next, position, layer, url);
         }
     }
     return next;
@@ -352,14 +416,49 @@ export function getLayoutReview(before, after) {
             const b = after.menus?.[menu]?.[layer];
             const fields = ['panel', 'entry', 'itemStyle'].flatMap(area =>
                 fieldChanges(a?.[area], b?.[area]).map(field => ({ ...field, area })));
-            const itemCount = fieldChanges(a?.items, b?.items).length;
-            if (fields.length || itemCount) changes[layer].push({ menu, fields, itemCount });
+            const items = fieldChanges(a?.items, b?.items).map(({ key, from, to }) =>
+                ({ key, fields: fieldChanges(from, to) }));
+            if (fields.length || items.length) changes[layer].push({ menu, fields, items });
         }
     }
     for (const menu of Object.keys(MENUS)) {
         if (!equalSettings(before.menus?.[menu]?.groups, after.menus?.[menu]?.groups)) changes.sharedMenus.push(menu);
     }
     return changes;
+}
+
+export function restoreReviewFields(template, baseline, updates) {
+    const next = structuredClone(template);
+    for (const { layer, change, field, item } of updates) {
+        let values;
+        if (change.section) {
+            values = next[layer][change.section] ??= {};
+        } else {
+            const menu = (next.menus ??= {})[change.menu] ??= {};
+            const target = menu[layer] ??= {};
+            if (item) {
+                const group = field.key === 'group' && field.from;
+                if (group && group !== 'more' && !Object.hasOwn(menu.groups ?? {}, group)) {
+                    const original = baseline.menus?.[change.menu]?.groups?.[group];
+                    const groups = menu.groups ??= {};
+                    if (!original || Object.keys(groups).length >= 20) {
+                        throw new Error('无法恢复原分组，请在菜单中选择要使用的分组。');
+                    }
+                    groups[group] = original;
+                }
+                values = (target.items ??= {})[item] ??= {};
+            } else {
+                values = target[field.area] ??= {};
+            }
+        }
+        if (field.from === undefined) delete values[field.key];
+        else values[field.key] = field.from;
+    }
+    return parseTemplate(next);
+}
+
+export function restoreReviewField(template, baseline, layer, change, field, item) {
+    return restoreReviewFields(template, baseline, [{ layer, change, field, item }]);
 }
 
 export function effectiveFields(template, device, section) {
@@ -399,29 +498,33 @@ function background(v, section) {
 
 function imageRules(selector, v, edges) {
     if (v.url === undefined && !edges) return '';
-    const base = rule(selector, { 'background-image': 'none' });
+    const base = v.url === undefined ? '' : rule(selector, { 'background-image': 'none' });
     const layer = {
         content: '""', position: 'absolute', inset: '0',
         'pointer-events': 'none', 'border-radius': 'inherit', 'z-index': '-1',
     };
-    const picture = v.url ? 'url(' + cssString(v.url) + ') ' + (v.position ?? 'center') + ' / ' + (v.size ?? 'cover') + ' no-repeat' : '';
-    layer.background = [...(edges ?? []), picture].filter(Boolean).join(', ') || 'none';
-    if (v.url) {
-        layer.filter = 'brightness(' + (100 - (v.mask ?? 0)) + '%)';
-        layer.opacity = (v.imageOpacity ?? 100) / 100;
-    }
-    // The sticky layer stays at the top of the native chat scrollport. Its
-    // negative margin cancels its flex size, leaving message flow untouched.
+    const picture = v.url ? 'url(' + cssString(v.url) + ') ' + imagePosition(v) + ' / ' + imageSize(v) + ' no-repeat' : '';
+    layer.background = picture || 'none';
+    layer.filter = v.url ? 'brightness(' + (100 - (v.mask ?? 0)) + '%)' : 'none';
+    layer.opacity = v.url ? (v.imageOpacity ?? 100) / 100 : 1;
     if (selector === targets.chat) {
-        Object.assign(layer, {
-            position: 'sticky', top: '0', inset: 'auto', 'margin-block-end': 'calc(0px - 100cqh)',
-            'inset-block-start': '0', 'align-self': 'stretch', flex: '0 0 100cqh',
+        // Both sticky layers precede the messages in flex order. The negative
+        // margin cancels each layer's height, leaving native scrolling intact.
+        const sticky = {
+            content: '""', 'pointer-events': 'none', 'border-radius': 'inherit',
+            position: 'sticky', 'inset-block-start': '0', 'align-self': 'stretch',
+            flex: '0 0 100cqh', 'margin-block-end': 'calc(0px - 100cqh)',
+        };
+        let result = base + rule(selector, { 'container-type': 'size', isolation: 'isolate' });
+        if (v.url !== undefined) result += rule(selector + '::before', {
+            ...sticky, order: '-2', 'z-index': '-2', background: layer.background, filter: layer.filter, opacity: layer.opacity,
         });
-        let result = base + rule(selector, { 'container-type': 'size', isolation: 'isolate' }) +
-            rule(selector + '::before', layer);
-        if (picture || edges) result += '@supports not (height: 1cqh) {\n' + rule(selector, {
-            background: layer.background,
-        }) + rule(selector + '::before', { content: 'none' }) + '}\n';
+        if (edges) result += rule(selector + '::after', {
+            ...sticky, order: '-1', 'z-index': '-1', background: edges.join(', ') || 'none',
+        });
+        result += '@supports not (height: 1cqh) {\n' +
+            rule(selector, { background: [...(edges ?? []), picture].filter(Boolean).join(', ') || 'none' }) +
+            rule(selector + '::before, ' + selector + '::after', { content: 'none' }) + '}\n';
         return result;
     }
     return base + rule(selector, { isolation: 'isolate', ...(selector === targets.input ? { position: 'relative' } : {}) }) +
@@ -596,8 +699,8 @@ function decorationRules(section, selector, v) {
     const size = v.sizePx ?? 80;
     const effect = v.mask ? 'brightness(' + (100 - v.mask) + '%)' : undefined;
     if (section === 'cover') return rule(selector, {
-        'background-image': picture, 'background-size': v.size ?? 'cover',
-        'background-position': v.position ?? 'center', 'background-repeat': 'no-repeat',
+        'background-image': picture, 'background-size': imageSize(v),
+        'background-position': imagePosition(v), 'background-repeat': 'no-repeat',
     }) + (v.text !== undefined ? rule(selector + '::before', art) : '');
     if (section === 'logo' || section === 'sticker' || section === 'greeting') {
         Object.assign(art, {
@@ -610,7 +713,7 @@ function decorationRules(section, selector, v) {
     } else {
         Object.assign(art, { display: v.url || v.text ? 'block' : 'none', 'text-align': 'center', 'min-height': v.url ? 'min(' + size + 'px, 12vw)' : '0' });
     }
-    art.background = picture + ' ' + (v.position ?? 'center') + ' / ' + (v.size ?? 'contain') + ' no-repeat';
+    art.background = picture + ' ' + imagePosition(v) + ' / ' + imageSize(v, 'contain') + ' no-repeat';
     if (v.imageOpacity !== undefined) art.opacity = v.imageOpacity / 100;
     if (effect) art.filter = effect;
     return rule(selector + '::after', art);
@@ -651,11 +754,16 @@ function extraRules(section, v, device) {
     if (kind === 'details') return detailsRules(v);
     if (section === 'topPendant') {
         if (v.url === undefined) return '';
+        const aligned = v.align === 'left' || v.align === 'right';
+        const x = 'clamp(-22vw, ' + (v.offsetX ?? 0) + 'px, 22vw)';
+        const y = 'clamp(-15vh, ' + (v.offsetY ?? 0) + 'px, 20vh)';
         return rule(selector + '::after', {
             content: '""', position: 'absolute', top: '100%', 'pointer-events': 'none',
             left: v.align === 'right' ? 'auto' : v.align === 'left' ? '4px' : '50%',
             right: v.align === 'right' ? '4px' : 'auto',
-            transform: v.align === 'right' || v.align === 'left' ? 'none' : 'translateX(-50%)',
+            transform: v.offsetX !== undefined || v.offsetY !== undefined
+                ? (aligned ? '' : 'translateX(-50%) ') + 'translate(' + x + ', ' + y + ')'
+                : aligned ? 'none' : 'translateX(-50%)',
             width: 'min(' + (v.sizePx ?? 92) + 'px, 65vw)',
             height: 'min(' + (v.height ?? 68) + 'px, 22vh)',
             background: v.url ? 'url(' + cssString(v.url) + ') center top / contain no-repeat' : 'none',
@@ -757,6 +865,40 @@ export function compileCss(template, { runtime = false } = {}) {
     const mobile = layoutRules(clean, 'mobile', runtime);
     return desktop + (mobile ? '@media screen and (max-width: ' + BREAKPOINT + 'px) {\n' + mobile + '}\n' : '') +
         compileMenuCss(clean.menus, cssString, BREAKPOINT, runtime);
+}
+
+export function getShareSummary(template) {
+    const notes = runtimeMenuFeatures(template.menus);
+    const added = new Set();
+    for (const layer of ['desktop', 'mobile']) {
+        const launcher = effectiveFields(template, layer, 'launcher');
+        if (launcher.entries && launcher.entries !== 'none') added.add('输入栏新增入口，如「换主题」和「返回底部」');
+        if (Object.keys(effectiveFields(template, layer, 'bottomButton')).length) added.add('「返回底部」扩展按钮样式');
+        const info = effectiveFields(template, layer, 'messageInfo');
+        if (Object.values(info).includes('details')) added.add('消息信息的「点开看」按钮');
+        if (['show', 'details'].includes(info.model)) added.add('消息里的模型名称文字');
+        if (['expanded', 'collapsed'].includes(info.reasoning)) added.add('推理过程的初始展开或折叠状态');
+    }
+    const scene = template.desktop.scene;
+    if (scene && (scene.chat || scene.character || (scene.period && scene.period !== 'any'))) {
+        added.add('按聊天、角色或时段选择模板的场景条件');
+    }
+    const composer = effectiveFields(template, 'mobile', 'mobileComposer');
+    if (Object.keys(COMPOSER_BUTTONS).some(key => ['left', 'right'].includes(composer[key]) ||
+        composer[key + 'Order'] !== undefined)) added.add('手机输入栏按钮重排');
+    if (composer.more === 'on') added.add('手机输入栏「消息更多」快捷操作');
+
+    const isLocal = url => typeof url === 'string' && url.startsWith('data:image/');
+    const hasPhoto = layer => Object.values(layer).some(fields => isLocal(fields.url));
+    const menusHavePhoto = Object.values(template.menus ?? {}).some(menu => ['desktop', 'mobile'].some(layer => {
+        const values = menu[layer];
+        return isLocal(values?.panel?.background) || isLocal(values?.entry?.icon) || isLocal(values?.itemStyle?.icon) ||
+            Object.values(values?.items ?? {}).some(item => isLocal(item.icon));
+    }));
+    return {
+        runtimeFeatures: [...notes, ...added],
+        hasLocalPhotos: hasPhoto(template.desktop) || hasPhoto(template.mobile) || menusHavePhoto,
+    };
 }
 
 export const BEGIN = '/* BEGIN 酒馆布局编辑器 */';

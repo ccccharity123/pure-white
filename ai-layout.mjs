@@ -30,7 +30,7 @@ export function layoutFields(sections) {
     const fields = [];
     for (const [area, { label, fields: descriptors }] of Object.entries(sections)) {
         for (const [key, field] of Object.entries(descriptors)) {
-            if (field.type === 'number' && !['opacity', 'mask', 'imageOpacity'].includes(key) && area !== 'mobileComposer') {
+            if (field.type === 'number' && !['opacity', 'mask', 'imageOpacity', 'imageX', 'imageY', 'imageScale', 'offsetX', 'offsetY'].includes(key) && area !== 'mobileComposer') {
                 fields.push({ area, key, ...field, label: label + ' · ' + field.label });
             }
         }

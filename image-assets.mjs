@@ -2,6 +2,27 @@ export const MAX_TEMPLATE_FILE = 12 * 1024 * 1024;
 const MAX_INLINE_LENGTH = 512 * 1024;
 const MAX_PHOTO_BYTES = 25 * 1024 * 1024;
 
+export const IMAGE_SIZE_OPTIONS = { cover: '覆盖', contain: '完整显示', '100% 100%': '拉伸', auto: '原始大小' };
+
+const imageAlign = {
+    top: [50, 0], bottom: [50, 100], left: [0, 50], right: [100, 50], center: [50, 50],
+};
+
+export function imageCoordinates(values, preset = values.position ?? 'center') {
+    const [x, y] = imageAlign[preset];
+    return [values.imageX >= 0 ? values.imageX : x, values.imageY >= 0 ? values.imageY : y];
+}
+
+export function imagePosition(values, preset = values.position ?? 'center') {
+    if (!(values.imageX >= 0) && !(values.imageY >= 0)) return preset;
+    const [x, y] = imageCoordinates(values, preset);
+    return x + '% ' + y + '%';
+}
+
+export function imageSize(values, fallback = 'cover') {
+    return values.imageScale > 0 ? values.imageScale + '% auto' : values.size ?? fallback;
+}
+
 export function normalizeInlineImage(value) {
     if (typeof value !== 'string' || value.length > MAX_INLINE_LENGTH) return undefined;
     const match = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(value);
@@ -68,7 +89,8 @@ export function createPhotoPicker({ onSelect, setMessage, label, urlInput, canSe
     picker.addEventListener('change', async () => {
         const file = picker.files?.[0];
         picker.value = '';
-        if (!file) return;
+        if (!file || tools.hasAttribute('data-tle-photo-pending')) return;
+        tools.dataset.tlePhotoPending = 'true';
         choose.disabled = urlInput.disabled = true;
         setMessage('正在处理照片…');
         try {
@@ -82,6 +104,7 @@ export function createPhotoPicker({ onSelect, setMessage, label, urlInput, canSe
         } catch (error) {
             if (tools.isConnected) setMessage(error.message || '无法处理照片。');
         } finally {
+            delete tools.dataset.tlePhotoPending;
             choose.disabled = urlInput.disabled = false;
         }
     });

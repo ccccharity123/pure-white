@@ -1,4 +1,5 @@
-import { createPhotoPicker } from './image-assets.mjs';
+import { createPositionPad, focusPositionPad } from './image-position.mjs';
+import { IMAGE_SIZE_OPTIONS, createPhotoPicker } from './image-assets.mjs';
 import { BREAKPOINT, normalizeUrl } from './model.mjs';
 import { MENUS, menuRank, menuView } from './menus.mjs';
 
@@ -6,12 +7,17 @@ const fields = {
     width: ['宽度 (px)', 'number', 180, 720], height: ['最大高度 (px)', 'number', 120, 900],
     gap: ['项目间距 (px)', 'number', 0, 32], columns: ['自定列数', 'number', 1, 3],
     position: ['打开位置', { native: '跟随入口', top: '视口顶部', bottom: '视口底部', center: '视口中央' }],
-    background: ['背景图 URL', 'url'], label: ['显示名称', 'text'], icon: ['图标图片 URL', 'url'],
+    background: ['背景图 URL', 'url'],
+    size: ['图片缩放', IMAGE_SIZE_OPTIONS],
+    imageX: ['图片水平位置 (%)', 'number', -1, 100], imageY: ['图片垂直位置 (%)', 'number', -1, 100],
+    imageScale: ['图片自定缩放 (%)', 'number', 0, 300],
+    label: ['显示名称', 'text'], icon: ['图标图片 URL', 'url'],
     color: ['文字颜色', 'text'], fill: ['底色', 'text'], opacity: ['不透明度 (%)', 'number', 10, 100],
     radius: ['圆角 (px)', 'number', 0, 48], textSize: ['字号 (px)', 'number', 10, 26],
 };
 const sizes = { desktop: '桌面', mobile: '手机' };
 const itemFields = ['icon', 'color', 'fill', 'radius', 'textSize'];
+const imageMetrics = ['size', 'imageX', 'imageY', 'imageScale'];
 const el = (tag, text, className) => {
     const node = document.createElement(tag);
     if (text) node.textContent = text;
@@ -19,7 +25,7 @@ const el = (tag, text, className) => {
     return node;
 };
 
-export function createMenuEditor({ getTemplate, onChange, setMessage, getItems, button, onPreview, layoutLock }) {
+export function createMenuEditor({ getTemplate, onChange, setMessage, getItems, button, onPreview, layoutLock, retryImage }) {
     let id = 'wand';
     let device = 'desktop';
     let selected = '';
@@ -46,7 +52,22 @@ export function createMenuEditor({ getTemplate, onChange, setMessage, getItems, 
         device = mobile ? 'mobile' : 'desktop';
         selected = hit.key ?? '';
         appearance = hit.scope !== 'item';
-        styleTarget = hit.scope === 'entry' ? 'entry' : 'panel';
+        styleTarget = ['entry', 'itemStyle', 'global'].includes(hit.scope) ? hit.scope : 'panel';
+    }
+
+    function position() {
+        return { id, device, selected, appearance, styleTarget };
+    }
+
+    function restorePosition(state) {
+        if (!Object.hasOwn(MENUS, state?.id)) return;
+        id = state.id;
+        device = state.device === 'mobile' ? 'mobile' : 'desktop';
+        selected = typeof state.selected === 'string' ? state.selected.slice(0, 140) : '';
+        appearance = state.appearance === true;
+        styleTarget = ['entry', 'itemStyle', 'global'].includes(state.styleTarget) ? state.styleTarget : 'panel';
+        batch = false;
+        chosen.clear();
     }
 
     function model(menuId = id, create = false) {
@@ -102,9 +123,12 @@ export function createMenuEditor({ getTemplate, onChange, setMessage, getItems, 
     function field(key, effective, own, change, onPhoto) {
         const [label, type, min, max] = fields[key];
         if (typeof type === 'object') {
-            return selectField(label, [['', '沿用默认'], ...Object.entries(type)], own ?? '', value => change(value || undefined));
+            const row = selectField(label, [['', '沿用默认'], ...Object.entries(type)], own ?? '', value => change(value || undefined));
+            row.dataset.menuField = key;
+            return row;
         }
         const row = el('label', label, 'tle-menu-field');
+        row.dataset.menuField = key;
         const input = el('input');
         input.type = type;
         input.setAttribute('aria-label', label);
@@ -153,6 +177,30 @@ export function createMenuEditor({ getTemplate, onChange, setMessage, getItems, 
         write(menuId, 'panel', '', 'background', value, layerDevice);
     }
 
+    function menuPositionPad(menuId, layerDevice, rerender) {
+        const readPanel = () => menuId === 'global'
+            ? { ...model('global')?.desktop?.panel, ...(layerDevice === 'mobile' ? model('global')?.mobile?.panel : {}) }
+            : menuView(getTemplate().menus, menuId, layerDevice === 'mobile').panel;
+        return createPositionPad({
+            read() {
+                const panel = readPanel();
+                return { ...panel, url: panel.background };
+            },
+            apply({ url, ...framing }, pasted) {
+                const container = document.querySelector('#tle-editor .tle-body');
+                const scroll = container.scrollTop;
+                const target = settings(menuId, 'panel', '', true, layerDevice);
+                Object.assign(target, framing);
+                if (url !== undefined) target.background = url;
+                onChange();
+                rerender();
+                focusPositionPad(container, scroll, pasted);
+            },
+            button, label: (MENUS[menuId]?.label ?? '菜单全局样式') + ' · ' + sizes[layerDevice],
+            preset: 'center', selector: MENUS[menuId]?.content,
+        });
+    }
+
     function renderBackground(menuId, layerDevice, rerender, remember) {
         const card = el('section', '', 'tle-edit-card tle-menu-background');
         const thumb = el('img', '', 'tle-menu-thumbnail');
@@ -160,19 +208,28 @@ export function createMenuEditor({ getTemplate, onChange, setMessage, getItems, 
         thumb.referrerPolicy = 'no-referrer';
         const feedback = el('small');
         feedback.setAttribute('role', 'status');
+        const retry = button('重试加载图片', () => {
+            thumb.removeAttribute('src');
+            retryImage(asset());
+            update();
+        }, 'menu_button tle-image-retry');
+        retry.hidden = true;
         thumb.addEventListener('load', () => {
             thumb.hidden = false;
+            retry.hidden = true;
             feedback.textContent = '图片已加载。';
         });
         thumb.addEventListener('error', () => {
             thumb.hidden = true;
-            feedback.textContent = '图片加载失败，请检查链接。';
+            retry.hidden = false;
+            feedback.textContent = '图片加载失败，保留菜单底色。';
         });
         const asset = () => menuView(getTemplate().menus, menuId, layerDevice === 'mobile').panel.background;
         const update = () => {
             const url = asset();
             if (url === thumb.getAttribute('src')) return;
             thumb.hidden = true;
+            retry.hidden = true;
             if (url) {
                 thumb.src = url;
                 feedback.textContent = '正在加载图片…';
@@ -199,7 +256,15 @@ export function createMenuEditor({ getTemplate, onChange, setMessage, getItems, 
             commit(value);
             rerender();
         };
-        card.append(el('h3', MENUS[menuId].label + '背景'), control, thumb, feedback, actions(
+        const fine = disclosure('精调图片');
+        fine.append(menuPositionPad(menuId, layerDevice, rerender));
+        const panel = menuView(getTemplate().menus, menuId, layerDevice === 'mobile').panel;
+        const own = settings(menuId, 'panel', '', false, layerDevice);
+        for (const key of imageMetrics) {
+            fine.append(field(key, panel[key], own[key], value => write(menuId, 'panel', '', key, value, layerDevice)));
+        }
+        fine.append(el('small', '水平 0% 为左，垂直 0% 为上。位置填 -1 回到居中，自定缩放填 0 时使用上方的图片缩放选项。'));
+        card.append(el('h3', MENUS[menuId].label + '背景'), control, thumb, feedback, retry, fine, actions(
             button('隐藏图片', () => reset('')),
             button('恢复默认图片', () => reset(undefined)),
             button('预览此菜单', event => onPreview(menuId, event)),
@@ -231,7 +296,7 @@ export function createMenuEditor({ getTemplate, onChange, setMessage, getItems, 
     }
 
     function removeOverride(menuId, area, item) {
-        const layer = model(menuId)?.[layerDevice];
+        const layer = model(menuId)?.[device];
         if (!layer) return;
         if (item) delete layer.items?.[item];
         else delete layer[area];
@@ -256,6 +321,7 @@ export function createMenuEditor({ getTemplate, onChange, setMessage, getItems, 
             for (const key of keys) {
                 const control = field(key, effective[key], own[key], value => change(key, value));
                 const lock = area === 'panel' && layoutLock?.(device, 'menus.' + menuId, key);
+                control.dataset.menuArea = area;
                 container.append(control);
                 if (lock) container.append(lock);
             }
@@ -270,13 +336,18 @@ export function createMenuEditor({ getTemplate, onChange, setMessage, getItems, 
             add(box, ['width', 'background', 'radius']);
             const more = disclosure('更多设置');
             add(more, ['height', 'gap', 'position', 'fill', 'opacity', 'columns']);
+            more.append(menuPositionPad(menuId, device, () => render(root, true)));
+            add(more, imageMetrics);
             if (styleTarget === 'global') {
                 more.append(el('h4', '全局入口'));
                 for (const target of ['entry', 'itemStyle']) {
                     if (target === 'itemStyle') more.append(el('h4', '全局项目'));
                     const common = settings('global', target);
-                    for (const key of itemFields) more.append(field(key, common[key], common[key],
-                        value => write('global', target, '', key, value)));
+                    for (const key of itemFields) {
+                        const control = field(key, common[key], common[key], value => write('global', target, '', key, value));
+                        control.dataset.menuArea = target;
+                        more.append(control);
+                    }
                 }
             }
             if (menuId !== 'global' && Object.keys(view.groups).length) {
@@ -323,6 +394,7 @@ export function createMenuEditor({ getTemplate, onChange, setMessage, getItems, 
 
     function groupingControls(view, currentGroup, move, label = '移入分组') {
         const row = el('div', '', 'tle-group-controls');
+        row.dataset.menuField = 'group';
         const compose = el('form', '', 'tle-group-compose');
         compose.hidden = true;
         const input = el('input');
@@ -373,11 +445,13 @@ export function createMenuEditor({ getTemplate, onChange, setMessage, getItems, 
             const updated = menuView(getTemplate().menus, id, device === 'mobile');
             rowIcon.replaceChildren(...icon({ ...updated.itemStyle, ...updated.items[key] }, item).childNodes);
         }));
-        card.append(actions(button('上移', () => reorder(items, view, key, -1)),
+        const order = actions(button('上移', () => reorder(items, view, key, -1)),
             button('下移', () => reorder(items, view, key, 1)), button('恢复原图标', () => {
                 write(id, '', key, 'icon', '');
                 render(root, true);
-            })));
+            }));
+        order.dataset.menuField = 'order';
+        card.append(order);
         card.append(groupingControls(view, effective.group ?? '', group => write(id, '', key, 'group', group)));
         const more = disclosure('更多设置');
         for (const fieldKey of itemFields.slice(1)) {
@@ -476,6 +550,7 @@ export function createMenuEditor({ getTemplate, onChange, setMessage, getItems, 
                 write(id, '', item.key, 'pinned', !itemStyle.pinned);
                 render(root, true);
             }, 'tle-pin');
+            pin.dataset.menuField = 'pinned';
             pin.setAttribute('aria-pressed', String(Boolean(itemStyle.pinned)));
             if (batch) {
                 const check = el('input');
@@ -501,5 +576,5 @@ export function createMenuEditor({ getTemplate, onChange, setMessage, getItems, 
         if (current && fromPick) current.scrollIntoView({ block: 'nearest' });
     }
 
-    return { render, renderBackground, reset, select, setBackground };
+    return { render, renderBackground, reset, select, setBackground, position, restorePosition };
 }

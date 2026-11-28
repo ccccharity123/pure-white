@@ -456,6 +456,15 @@
 #tle-editor .tle-material-batch-targets label {
     min-height: 34px;
 }
+#tle-editor .tle-material-replacement > :is(input, select) {
+    display: block;
+    width: 100%;
+}
+#tle-editor .tle-material-replacement .tle-checkbox {
+    align-items: flex-start;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
 
 #tle-editor .tle-material-index-filters {
     display: grid;
@@ -473,6 +482,39 @@
     justify-content: space-between;
     gap: 8px;
     text-align: start;
+}
+#tle-editor .tle-material-image-header,
+#tle-editor .tle-material-index-results .tle-material-position-result {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    overflow-wrap: anywhere;
+}
+#tle-editor .tle-material-image-card {
+    min-width: 0;
+    border: 1px solid var(--tle-line);
+    border-radius: 9px;
+    padding: 7px;
+}
+#tle-editor .tle-material-image-header small {
+    display: block;
+    text-align: start;
+}
+#tle-editor .tle-material-image-header > .menu_button {
+    min-height: 36px;
+}
+#tle-editor .tle-material-image-uses {
+    margin-block-start: 5px;
+}
+#tle-editor .tle-material-image-uses > summary {
+    min-height: 30px;
+    align-content: center;
+    cursor: pointer;
+    color: var(--tle-muted);
+}
+#tle-editor .tle-material-image-uses > .tle-actions {
+    margin-block: 4px;
 }
 #tle-editor .tle-material-state {
     flex-shrink: 0;
@@ -499,3 +541,129 @@
     overflow-wrap: anywhere;
 }
 #tle-editor .tle-review-list li + li { margin-block-start: 5px; }
+
+#tle-editor .tle-theme-steps [aria-current="step"] {
+    color: var(--tle-accent);
+    background: var(--tle-soft);
+    border-color: #d9d2f8;
+}
+#tle-editor .tle-theme-materials {
+    display: grid;
+    gap: 5px;
+}
+#tle-editor .tle-theme-material {
+    min-width: 0;
+    border: 1px solid var(--tle-line);
+    border-radius: 10px;
+    background: var(--tle-paper);
+}
+#tle-editor .tle-theme-material-header {
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 8px;
+}
+#tle-editor .tle-theme-material-header small {
+    display: block;
+}
+#tle-editor .tle-theme-material-preview {
+    display: block;
+    width: 48px;
+    height: 38px;
+    overflow: hidden;
+    border-radius: 6px;
+    background: var(--tle-canvas);
+}
+#tle-editor .tle-theme-material-preview img:not([hidden]) {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+#tle-editor .tle-theme-material > :not(.tle-theme-material-header) {
+    margin: 0 7px 7px;
+}
+
+#tle-editor .tle-review-field > .tle-actions {
+    margin-top: 4px;
+}
+#tle-editor .tle-review-field .menu_button {
+    min-height: 32px;
+    padding: 3px 8px;
+}
+
+#tle-editor .tle-review-sharing > .tle-share-card {
+    border: 0;
+    padding: 4px 0 0;
+}
+#tle-editor .tle-share-compat {
+    margin: 0;
+    padding-inline-start: 1.2rem;
+    overflow-wrap: anywhere;
+}
+#tle-editor .tle-share-compat + input {
+    margin-block-start: 8px;
+}
+
+#tle-editor .tle-image-retry[hidden] { display: none; }
+#tle-editor .tle-image-retry { justify-self: start; }
+
+#tle-editor .tle-review-batch {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    border: 1px solid var(--tle-line);
+    border-radius: 10px;
+    background: var(--tle-paper);
+    padding: 6px;
+}
+#tle-editor .tle-review-batch > small {
+    margin-inline-end: auto;
+}
+
+#tle-editor .tle-title-row .tle-status { flex: 1; min-width: 0; }
+#tle-editor .tle-workbench-launch { min-height: 30px; flex-shrink: 0; }
+#tle-editor[data-picking=true] .tle-workbench-launch { display: none; }
+#tle-editor .tle-workbench-list { display: grid; gap: 6px; }
+#tle-editor .tle-quick-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 5px;
+    align-items: stretch;
+}
+#tle-editor .tle-quick-row .tle-quick-open {
+    flex-direction: column;
+    align-items: flex-start;
+    text-align: start;
+    overflow-wrap: anywhere;
+    min-height: 44px;
+}
+#tle-editor .tle-quick-row > .tle-actions { grid-column: 1 / -1; }
+
+#tle-editor .tle-workbench-organize { justify-self: start; }
+
+#tle-editor .tle-image-position {
+    display: grid;
+    gap: 6px;
+}
+#tle-editor .tle-image-position-frame {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    max-height: 170px;
+    border: 1px solid var(--tle-line);
+    border-radius: 8px;
+    background-color: var(--tle-canvas);
+    background-repeat: no-repeat;
+    outline-offset: 2px;
+}
+#tle-editor .tle-image-position-frame[data-ready=true] {
+    cursor: grab;
+    touch-action: none;
+}
+#tle-editor .tle-image-position-frame[data-dragging=true] { cursor: grabbing; }
+#tle-editor .tle-image-position-frame:focus-visible { outline: 2px solid var(--tle-accent); }
+#tle-editor .tle-image-position > button { justify-self: start; }
+
+#tle-editor .tle-position-tools .menu_button { min-height: 37px; }
+#tle-editor .tle-position-tools > small { margin-inline-start: auto; }

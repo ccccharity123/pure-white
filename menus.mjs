@@ -1,3 +1,5 @@
+import { IMAGE_SIZE_OPTIONS, imagePosition, imageSize } from './image-assets.mjs';
+
 export const MENUS = {
     wand: { label: '魔杖菜单', trigger: '#extensionsMenuButton', panel: '#extensionsMenu', content: '#extensionsMenu' },
     chat: { label: '聊天操作菜单', trigger: '#options_button', panel: '#options', content: '#options > .options-content' },
@@ -6,8 +8,15 @@ export const MENUS = {
 export const menuNumberRanges = {
     width: [180, 720], height: [120, 900], columns: [1, 3], gap: [0, 32], opacity: [10, 100],
     radius: [0, 48], textSize: [10, 26], order: [1, 999],
+    imageX: [-1, 100], imageY: [-1, 100], imageScale: [0, 300],
+};
+export const MENU_STYLE_FIELDS = {
+    panel: ['width', 'height', 'columns', 'gap', 'background', 'fill', 'opacity', 'radius', 'position', 'size', 'imageX', 'imageY', 'imageScale'],
+    entry: ['color', 'fill', 'radius', 'textSize', 'icon'],
+    itemStyle: ['color', 'fill', 'radius', 'textSize', 'icon'],
 };
 const validKey = /^[a-z][a-z0-9:_-]{0,139}$/i;
+export const isMenuItemKey = key => typeof key === 'string' && validKey.test(key) && !Object.hasOwn(Object.prototype, key);
 const idKey = /^id:([a-z][a-z0-9_-]*)(?::(\d+))?$/i;
 const color = /^#[0-9a-f]{6}$/i;
 const plain = value => value && typeof value === 'object' && !Array.isArray(value);
@@ -28,6 +37,8 @@ export function cleanMenus(value, url) {
                 const safe = url(item);
                 if (safe !== undefined) result[key] = safe;
             } else if (key === 'position' && ['native', 'top', 'bottom', 'center'].includes(item)) {
+                result[key] = item;
+            } else if (key === 'size' && typeof item === 'string' && Object.hasOwn(IMAGE_SIZE_OPTIONS, item)) {
                 result[key] = item;
             } else if (key === 'label' && typeof item === 'string') {
                 result[key] = item.trim().slice(0, 64);
@@ -53,15 +64,15 @@ export function cleanMenus(value, url) {
             if (!plain(data[device])) continue;
             const input = data[device];
             const layer = {};
-            const panel = appearance(input.panel, ['width', 'height', 'columns', 'gap', 'background', 'fill', 'opacity', 'radius', 'position']);
-            const entry = appearance(input.entry, ['color', 'fill', 'radius', 'textSize', 'icon']);
-            const itemStyle = appearance(input.itemStyle, ['color', 'fill', 'radius', 'textSize', 'icon']);
+            const panel = appearance(input.panel, MENU_STYLE_FIELDS.panel);
+            const entry = appearance(input.entry, MENU_STYLE_FIELDS.entry);
+            const itemStyle = appearance(input.itemStyle, MENU_STYLE_FIELDS.itemStyle);
             if (Object.keys(panel).length) layer.panel = panel;
             if (Object.keys(entry).length) layer.entry = entry;
             if (Object.keys(itemStyle).length) layer.itemStyle = itemStyle;
             const items = {};
             for (const [id, values] of Object.entries(defined(input.items)).slice(0, 300)) {
-                if (!validKey.test(id) || Object.hasOwn(Object.prototype, id) || !plain(values)) continue;
+                if (!isMenuItemKey(id) || !plain(values)) continue;
                 const item = appearance(values, ['order', 'group', 'pinned', 'label', 'icon', 'color', 'fill', 'radius', 'textSize']);
                 if (item.group && item.group !== 'more' && !Object.hasOwn(groups, item.group)) delete item.group;
                 if (Object.keys(item).length) items[id] = item;
@@ -100,6 +111,11 @@ export function menuNeedsGrid(view) {
     return view.panel.columns !== undefined || view.panel.gap !== undefined || Object.values(view.items).some(hasFlow);
 }
 
+function staticMenuItemId(view, key) {
+    const match = idKey.exec(key);
+    return match && !match[2] && !view.items[key + ':2'] && match[1] !== 'option_close_chat' ? match[1] : undefined;
+}
+
 export function runtimeMenuFeatures(menus) {
     const result = [];
     for (const [id, menu] of Object.entries(MENUS)) {
@@ -112,7 +128,7 @@ export function runtimeMenuFeatures(menus) {
                 if (item.label) { types.add('改名'); keys.add(key); }
                 if (item.pinned || item.order !== undefined) { types.add('排序与置顶'); keys.add(key); }
                 if (item.group) { types.add('分组与更多'); keys.add(key); }
-                if ((!idKey.test(key) || /:\d+$/.test(key) || key === 'id:option_close_chat') && ['icon', 'color', 'fill', 'radius', 'textSize'].some(field => item[field] !== undefined)) {
+                if (!staticMenuItemId(view, key) && ['icon', 'color', 'fill', 'radius', 'textSize'].some(field => item[field] !== undefined)) {
                     types.add('扩展标识项目外观'); keys.add(key);
                 }
             }
@@ -164,8 +180,8 @@ export function compileMenuCss(menus, cssString, breakpoint, runtime = false) {
                     'max-height': p.height === undefined ? limit : 'min(' + p.height + 'px, ' + limit + ')',
                     'box-sizing': 'border-box', 'overflow-y': 'auto', 'overscroll-behavior': 'contain',
                     'background-image': p.background === undefined ? undefined : url(p.background),
-                    'background-size': p.background ? 'cover' : undefined,
-                    'background-position': p.background ? 'center' : undefined,
+                    'background-size': p.background ? imageSize(p) : undefined,
+                    'background-position': p.background ? imagePosition(p, 'center') : undefined,
                     'background-color': p.fill || p.opacity !== undefined ? colorAlpha(p.fill, p.opacity) : undefined,
                     'border-radius': px(p.radius),
                 });
@@ -183,11 +199,11 @@ export function compileMenuCss(menus, cssString, breakpoint, runtime = false) {
             css += styleItem(trigger, view.entry, trigger + '::before');
             css += styleItem(':is(' + nativeItem + ')', runtime ? { ...view.itemStyle, icon: undefined } : view.itemStyle);
             for (const [key, item] of Object.entries(view.items)) {
-                const match = idKey.exec(key);
+                const nativeId = staticMenuItemId(view, key);
                 if (runtime) {
                     css += styleItem(content + ' [data-tle-native-item=' + cssString(key) + ']', { ...item, icon: undefined });
-                } else if (match && !match[2] && !view.items[key + ':2'] && match[1] !== 'option_close_chat') {
-                    css += styleItem(content + ' #' + match[1], item);
+                } else if (nativeId) {
+                    css += styleItem(content + ' #' + nativeId, item);
                 }
             }
         }

@@ -1,5 +1,8 @@
 import { applyLayout, devices, layoutChanges, layoutFields, layoutPrompt, layoutStarts, layoutFormat, layoutValue, lockId, readLayoutProposal } from './ai-layout.mjs';
-import { createPhotoPicker, MAX_TEMPLATE_FILE } from './image-assets.mjs';
+import { checkpointSettings, isTemplateId, readTemplates, restoreCheckpointSettings, templateLimit } from './draft-checkpoint.mjs';
+import { cleanQuickAccess, searchWorkbench, WORKBENCH_ACTIONS } from './workbench.mjs';
+import { clearPositionClipboard, createPositionPad, focusPositionPad, refreshPositionPads } from './image-position.mjs';
+import { createPhotoPicker, IMAGE_SIZE_OPTIONS, MAX_TEMPLATE_FILE } from './image-assets.mjs';
 import * as hostApp from '/script.js';
 import { extension_settings } from '/scripts/extensions.js';
 import { getThemeObject, power_user } from '/scripts/power-user.js';
@@ -8,15 +11,15 @@ import { getContext } from '/scripts/st-context.js';
 import { createRuntime } from './runtime.js';
 import { createMenuRuntime } from './menu-runtime.js';
 import { createMenuEditor } from './menu-editor.js';
-import { MENUS, menuView, runtimeMenuFeatures } from './menus.mjs';
+import { MENUS, MENU_STYLE_FIELDS, menuView } from './menus.mjs';
 import { createCustomization } from './customization.js';
-import { BREAKPOINT, GROUPS, MAX_MATERIAL_FAVORITES, SECTIONS, applyMaterialBatch, applyTemplateParts, blankTemplate, cleanField, cleanMaterialFavorites, cleanName, compileCss, effectiveFields, equalSettings, getLayoutReview, matchScene, mergeTheme, normalizeUrl, parseTemplate } from './model.mjs';
+import { BREAKPOINT, GROUPS, MAX_MATERIAL_FAVORITES, SECTIONS, applyMaterialBatch, applyTemplateParts, blankTemplate, cleanField, cleanMaterialFavorites, cleanName, compileCss, effectiveFields, equalSettings, findMaterialUses, getLayoutReview, getShareSummary, groupMaterialUses, matchScene, materialImage, mergeTheme, normalizeUrl, parseTemplate, replaceMaterialUses, restoreReviewFields } from './model.mjs';
 
 const KEY = 'tavern_layout_editor';
 const TITLE = '纯白';
 const { eventSource, event_types, saveSettings } = hostApp;
 const isTauriTavern = () => Boolean(window.__TAURITAVERN__ || window.__TAURITAVERN_MAIN_READY__);
-const LIMIT = 100;
+const LIMIT = templateLimit;
 const menuId = 'tle-menu';
 const templateId = () => {
     const hex = Array.from(crypto.getRandomValues(new Uint8Array(18)), byte => byte.toString(16).padStart(2, '0'));
@@ -24,6 +27,9 @@ const templateId = () => {
 };
 
 let saved;
+let savedRevision = '';
+let parkedDraft;
+let resumedParkedId;
 let draft;
 let history;
 let panel;
@@ -45,13 +51,26 @@ let aiPreview;
 let openingLayout;
 let openingTemplateId;
 let reviewReturn = 'menus';
+let workbenchReturn = 'menus';
+let workbenchQuery = '';
+let organizeQuickAccess = false;
+const openReviewAreas = new Set();
+const reviewSelection = new Set();
+let reviewSelectionOwner;
+let reviewFilter = 'all';
+let reviewBatch = false;
+let themeFlow;
+let refreshFlowMaterials;
+let refreshShareStatus;
+const themeSteps = [['ai', '选排版'], ['materials', '换素材'], ['review', '核对保存']];
 let aiGoal = '';
 const aiSessions = new Map();
 let materialKey = '';
 const recentMaterials = new Map();
 let refreshMaterialShelf;
 let refreshMaterialIndex;
-const materialIndex = { query: '', filter: 'all', open: false };
+let refreshMaterialReplacement;
+const materialIndex = { query: '', filter: 'all', imageFilter: 'all', mode: 'positions', open: false };
 let importedParts;
 let partsSource = '';
 let applying = false;
@@ -77,22 +96,47 @@ function button(label, action, className = 'menu_button') {
     return node;
 }
 
-function readSettings() {
+function loadEditorSettings() {
     const input = extension_settings[KEY];
-    const templates = {};
-    for (const [id, value] of Object.entries(input?.templates ?? {}).slice(0, LIMIT)) {
-        if (!/^[a-f0-9-]{36}$/.test(id)) continue;
-        try {
-            templates[id] = parseTemplate(value);
-        } catch {
-            // An invalid entry must not prevent the remaining layouts loading.
-        }
+    const templates = readTemplates(input?.templates);
+    let active = Object.hasOwn(templates, input?.active) ? input.active : Object.keys(templates)[0];
+    if (!active) {
+        active = templateId();
+        templates[active] = blankTemplate();
     }
-    const active = Object.hasOwn(templates, input?.active) ? input.active : Object.keys(templates)[0];
-    const materialFavorites = cleanMaterialFavorites(input?.materialFavorites);
-    if (active) return { active, templates, materialFavorites, ...sceneSettings(input) };
-    const id = templateId();
-    return { active: id, templates: { [id]: blankTemplate() }, materialFavorites, ...sceneSettings(input) };
+    saved = {
+        active, templates, materialFavorites: cleanMaterialFavorites(input?.materialFavorites),
+        quickAccess: cleanQuickAccess(input?.quickAccess, SECTIONS), ...sceneSettings(input),
+    };
+    savedRevision = isTemplateId(input?.revision) ? input.revision : '';
+    const checkpoint = input?.parkedDraft;
+    parkedDraft = checkpoint?.version === 1 && isTemplateId(checkpoint.id) && isTemplateId(checkpoint.active) &&
+        Object.hasOwn(checkpoint.layouts ?? {}, checkpoint.active) ? checkpoint : undefined;
+}
+
+async function persistEditorSettings(settings, revision, checkpoint) {
+    const old = extension_settings[KEY];
+    const next = { ...settings, revision, ...(checkpoint ? { parkedDraft: checkpoint } : {}) };
+    const origin = panel;
+    let acknowledged = false;
+    const accept = () => { acknowledged = true; };
+    applying = true;
+    origin.inert = true;
+    eventSource.on(event_types.SETTINGS_UPDATED, accept);
+    extension_settings[KEY] = next;
+    try {
+        const result = await saveSettings();
+        if (result !== true && (result === false || !acknowledged)) throw new Error('宿主尚未确认保存，请重试。');
+        return true;
+    } catch (error) {
+        if (extension_settings[KEY] === next) extension_settings[KEY] = old;
+        if (panel === origin) setMessage(error.message || '保存失败，请重试。');
+        return false;
+    } finally {
+        eventSource.removeListener(event_types.SETTINGS_UPDATED, accept);
+        origin.inert = false;
+        applying = false;
+    }
 }
 
 function savedLayout() {
@@ -112,7 +156,7 @@ const customization = createCustomization(isTauriTavern);
 const nativeMenus = createMenuRuntime();
 const menuEditor = createMenuEditor({
     getTemplate: current, setMessage, getItems: nativeMenus.items, button,
-    layoutLock: layoutLockButton,
+    layoutLock: layoutLockButton, retryImage: retryPreviewImage,
     onPreview(id, event) {
         event.stopPropagation();
         const definition = MENUS[id];
@@ -218,15 +262,23 @@ function updateStatus() {
     if (!panel) return;
     if (history) updateHistory();
     const comparable = { ...saved, active: sceneActive ?? saved.active };
-    const dirty = invalidUrls.size || JSON.stringify(comparable) !== JSON.stringify(draft);
+    const dirty = invalidUrls.size || !equalSettings(comparable, draft);
     status.textContent = current().name + (dirty ? ' · 未保存' : ' · 已保存') +
         (draft.auto && !draft.manual && draft.active === sceneActive ? ' · 场景自动切换' : '');
     status.dataset.dirty = dirty ? 'true' : 'false';
     refreshMaterialIndex?.();
+    refreshMaterialReplacement?.();
+    refreshFlowMaterials?.();
+    refreshShareStatus?.();
+    refreshPositionPads(body);
 }
 
 function setMessage(text) {
     if (message) message.textContent = text;
+}
+
+function photoPending() {
+    return Boolean(body?.querySelector('[data-tle-photo-pending]'));
 }
 
 function imageState(url) {
@@ -240,6 +292,8 @@ function imageState(url) {
             entry.status = result;
             refreshPreview();
             refreshThumbnail();
+            refreshMaterialIndex?.();
+            refreshFlowMaterials?.();
         };
         image.onload = () => complete('loaded');
         image.onerror = () => complete('failed');
@@ -248,21 +302,33 @@ function imageState(url) {
     return images.get(url).status;
 }
 
+function retryPreviewImage(url) {
+    if (!url) return;
+    images.delete(url);
+    refreshPreview();
+    refreshThumbnail();
+    refreshPositionPads(body, url);
+}
+
 function refreshPreview() {
     if (!saved) return;
-    const comparison = panel?.dataset.aiOriginal ? (page === 'review' ? openingLayout : current()) : undefined;
+    const comparison = panel?.dataset.aiOriginal ? (page === 'review' ? reviewBaseline() : current()) : undefined;
     const template = structuredClone(comparison ?? aiPreview ?? current());
+    const activeUrls = new Set();
+    function prepareImage(fields, field) {
+        const url = fields?.[field];
+        if (!url) return;
+        activeUrls.add(url);
+        if (imageState(url) !== 'loaded') fields[field] = '';
+    }
+    for (const layout of [template.desktop, template.mobile]) {
+        for (const fields of Object.values(layout)) prepareImage(fields, 'url');
+    }
+    for (const menu of Object.values(template.menus ?? {})) {
+        for (const device of devices) prepareImage(menu[device]?.panel, 'background');
+    }
     customization.update(template);
     nativeMenus.update(template.menus);
-    const activeUrls = new Set();
-    for (const layout of [template.desktop, template.mobile]) {
-        for (const fields of Object.values(layout)) {
-            if (fields.url) {
-                activeUrls.add(fields.url);
-                if (imageState(fields.url) !== 'loaded') fields.url = '';
-            }
-        }
-    }
     for (const url of images.keys()) {
         if (!activeUrls.has(url)) images.delete(url);
     }
@@ -288,6 +354,8 @@ function refreshThumbnail() {
     if (result === 'loaded' && thumb.getAttribute('src') !== url) thumb.src = url;
     if (result !== 'loaded') thumb.removeAttribute('src');
     thumb.hidden = result !== 'loaded';
+    const retry = feedback.nextElementSibling;
+    if (retry?.classList.contains('tle-image-retry')) retry.hidden = result !== 'failed';
     feedback.textContent = invalid ? '请输入有效的 HTTPS 图片直链。' : ({
         loaded: '图片已加载。',
         failed: '图片加载失败，已保留底色。',
@@ -338,7 +406,7 @@ function layoutLockButton(layer, area, key) {
     return control;
 }
 
-function renderField(key, field) {
+function renderField(key, field, rerender = renderBody) {
     const row = element('div', '', 'tle-field');
     const own = current()[device][section]?.[key];
     const effective = effectiveFields(current(), device, section)[key];
@@ -438,7 +506,7 @@ function renderField(key, field) {
         row.append(button('清空图片', () => {
             invalidUrls.delete(urlKey);
             changeField(key, device === 'mobile' ? '' : undefined);
-            renderBody();
+            rerender();
         }));
         if (own === '' && device === 'mobile') row.append(element('small', '移动端图片已清空'));
     }
@@ -446,7 +514,7 @@ function renderField(key, field) {
         row.append(button(device === 'mobile' ? '继承' : '默认', () => {
             if (field.type === 'url') invalidUrls.delete(urlKey);
             changeField(key, undefined);
-            renderBody();
+            rerender();
         }));
     }
     const lock = layoutLockButton(device, section, key);
@@ -463,10 +531,11 @@ function selectTemplate(id) {
     updateStatus();
 }
 
-function addTemplate(template) {
+function addTemplate(template, beforeSelect) {
     if (Object.keys(draft.templates).length >= LIMIT) throw new Error('最多保存 ' + LIMIT + ' 个模板');
     const id = templateId();
     draft.templates[id] = template;
+    beforeSelect?.(id);
     selectTemplate(id);
 }
 
@@ -620,34 +689,6 @@ function renderTemplates() {
         }
     });
 
-    const sharing = element('section', '', 'tle-share-card');
-    const validate = action => () => {
-        if (invalidUrls.size) return setMessage('请先修正或清空无效图片 URL。');
-        action();
-    };
-    const themeName = element('input', '', 'text_pole');
-    themeName.type = 'text';
-    themeName.maxLength = 80;
-    themeName.placeholder = '原生主题名称（选填）';
-    themeName.setAttribute('aria-label', '原生主题名称');
-    const shareOption = (title, description, action) => {
-        const choice = button('', action, 'tle-share-option');
-        choice.setAttribute('aria-label', title);
-        const text = element('span');
-        text.append(element('strong', title), element('small', description));
-        const arrow = element('span', '↓', 'tle-share-arrow');
-        arrow.setAttribute('aria-hidden', 'true');
-        choice.append(text, arrow);
-        return choice;
-    };
-    sharing.append(element('h3', '分享'), shareOption('完整模板（含排序和分组）',
-        '发给安装了纯白的朋友，可继续编辑。', validate(() => jsonDownload(parseTemplate(current()), current().name))));
-    const native = shareOption('酒馆主题（静态外观）', '可从酒馆原生主题菜单导入。', validate(() => {
-        const title = cleanName(themeName.value) || cleanName(power_user.theme + ' · ' + current().name);
-        const snapshot = getThemeObject(title);
-        jsonDownload(mergeTheme(snapshot, current()), title);
-        setMessage('已导出。请在酒馆的 UI 主题菜单导入，然后选中该主题。');
-    }));
     const auto = element('input');
     auto.type = 'checkbox';
     auto.checked = draft.auto;
@@ -681,22 +722,68 @@ function renderTemplates() {
         management.open = true;
         name.focus();
         management.scrollIntoView({ block: 'nearest' });
-    }), button('导入模板', () => file.click()));
+    }), button('导入模板', () => file.click()), themeFlowButton());
     templateCard.append(element('h3', '当前模板'), select, toolbar);
-    const menuFeatures = runtimeMenuFeatures(current().menus);
-    sharing.append(native);
-    const shareOptions = element('details', '', 'tle-ui-disclosure');
-    shareOptions.append(element('summary', '主题名称与分享说明'), themeName);
-    body.append(file, templateCard, sharing, shareOptions, management, renderPartialApply());
-    if (menuFeatures.length) {
-        const notice = element('section', '', 'tle-export-notice');
-        notice.append(element('strong', '以下菜单效果需安装纯白并导入可编辑模板'));
-        const list = element('ul');
-        for (const feature of menuFeatures) list.append(element('li', feature));
-        notice.append(list);
-        shareOptions.append(notice);
-    }
+    body.append(file, templateCard, renderSharing(), management, renderPartialApply());
+}
 
+function renderSharing() {
+    const sharing = element('section', '', 'tle-share-card');
+    const source = element('small');
+    refreshShareStatus = () => {
+        const edited = invalidUrls.size || !equalSettings(current(), saved.templates[draft.active]);
+        source.textContent = edited ? '导出当前草稿，可继续编辑或另行保存。' : '导出当前已保存模板。';
+    };
+    refreshShareStatus();
+    const template = current();
+    const { runtimeFeatures, hasLocalPhotos } = getShareSummary(template);
+
+    const themeName = element('input', '', 'text_pole');
+    themeName.type = 'text';
+    themeName.maxLength = 80;
+    themeName.placeholder = '原生主题名称（选填）';
+    themeName.setAttribute('aria-label', '原生主题名称');
+    const shareOption = (title, description, action) => {
+        const choice = button('', () => {
+            if (photoPending()) return setMessage('正在处理照片，请稍候。');
+            if (invalidUrls.size) return setMessage('请先修正或清空无效图片 URL。');
+            action();
+        }, 'tle-share-option');
+        choice.setAttribute('aria-label', title);
+        const caption = element('span');
+        caption.append(element('strong', title), element('small', description));
+        const arrow = element('span', '↓', 'tle-share-arrow');
+        arrow.setAttribute('aria-hidden', 'true');
+        choice.append(caption, arrow);
+        return choice;
+    };
+
+    const complete = shareOption('完整模板（含排序和分组）', '接收方在纯白的「我的模板 → 导入模板」打开。', () => {
+        jsonDownload(parseTemplate(current()), current().name);
+        setMessage('已导出完整模板。');
+    });
+    const native = shareOption('酒馆主题（静态外观）', '接收方在酒馆的「用户设置 → UI 主题」导入后选中。', () => {
+        const title = cleanName(themeName.value) || cleanName(power_user.theme + ' · ' + current().name);
+        jsonDownload(mergeTheme(getThemeObject(title), current()), title);
+        setMessage('已导出酒馆主题。');
+    });
+    const compat = element('details', '', 'tle-ui-disclosure');
+    const headline = runtimeFeatures.length
+        ? runtimeFeatures.length + ' 类效果需要纯白'
+        : '导出格式与导入说明';
+    compat.append(element('summary', headline));
+    if (runtimeFeatures.length) {
+        compat.append(element('small', '以下效果需使用完整模板，并由接收方的纯白提供。'));
+        const list = element('ul', '', 'tle-share-compat');
+        for (const note of runtimeFeatures) list.append(element('li', note));
+        compat.append(list);
+    } else {
+        compat.append(element('small', '完整模板支持继续编辑。酒馆主题适合直接应用静态外观。'));
+    }
+    compat.append(themeName);
+    sharing.append(element('h3', '分享'), source, complete, native, compat);
+    if (hasLocalPhotos) sharing.append(element('small', '导出会携带该格式所使用的本地照片，请确认这些图片适合分享。'));
+    return sharing;
 }
 
 const zones = {
@@ -824,12 +911,13 @@ const quickFields = {
     page: ['url', 'fontSize', 'textColor'],
 };
 
-function renderAppearanceFields(descriptor, materials = false) {
+function renderAppearanceFields(descriptor, materials = false, container = body, rerender = renderBody) {
     const all = Object.entries(descriptor.fields);
     const preferred = quickFields[section] ??
         (descriptor.group === 'buttons' ? ['url', 'icon', 'color', 'fontSize'] :
             ['url', 'sizePx', 'repeat', 'fill', 'radius', 'width', 'color']);
     const materialKeys = ['url', 'icon', 'size', 'position', 'imageOpacity', 'mask', 'sizePx', 'height', 'align', 'repeat'];
+    const fineKeys = ['imageX', 'imageY', 'imageScale', 'offsetX', 'offsetY'];
     const ordered = (materials ? materialKeys : preferred).filter(key => Object.hasOwn(descriptor.fields, key)).slice(0, materials ? materialKeys.length : 4);
     const quick = new Set(ordered.length ? ordered : all.slice(0, 3).map(([key]) => key));
     const card = element('section', '', 'tle-edit-card tle-quick-appearance');
@@ -839,20 +927,50 @@ function renderAppearanceFields(descriptor, materials = false) {
     const details = element('details', '', 'tle-ui-disclosure');
     details.append(element('summary', '全部设置'));
     const add = (parent, key, field) => {
-        parent.append(renderField(key, field));
+        parent.append(renderField(key, field, rerender));
         if (key === 'url') {
             const thumb = element('img', '', 'tle-thumbnail');
             thumb.alt = '背景图片预览';
             thumb.referrerPolicy = 'no-referrer';
             const feedback = element('small', '', 'tle-image-status');
             feedback.setAttribute('role', 'status');
-            parent.append(thumb, feedback);
+            const retry = button('重试加载图片', () => retryPreviewImage(effectiveFields(current(), device, section).url),
+                'menu_button tle-image-retry');
+            retry.hidden = true;
+            parent.append(thumb, feedback, retry);
         }
     };
     for (const key of quick) add(card, key, descriptor.fields[key]);
-    for (const [key, field] of all) if (!quick.has(key)) add(details, key, field);
+    const fine = element('details', '', 'tle-ui-disclosure');
+    fine.append(element('summary', '精调图片'));
+    for (const key of fineKeys) if (descriptor.fields[key]) add(fine, key, descriptor.fields[key]);
+    if (fine.childElementCount > 1) {
+        if (descriptor.fields.imageScale) {
+            const read = () => effectiveFields(current(), device, section);
+            const selector = ({ top: '#top-bar', chat: '#chat', input: '#send_form', page: '#bg1' })[section] || descriptor.selector;
+            function applyPicture(values, pasted) {
+                const scroll = body.scrollTop;
+                const fields = current()[device][section] ??= {};
+                Object.assign(fields, values);
+                if (Object.hasOwn(values, 'url')) invalidUrls.delete(section + '/' + device);
+                refreshPreview();
+                updateStatus();
+                rerender();
+                focusPositionPad(body, scroll, pasted);
+            }
+            const fallbackSize = descriptor.kind === 'art' && section !== 'cover' ? 'contain' : 'cover';
+            const label = descriptor.label + (device === 'mobile' ? ' · 手机' : ' · 桌面');
+            const pad = createPositionPad({ read, apply: applyPicture, button, label, selector, fallbackSize });
+            fine.querySelector('summary').after(pad);
+            const preset = button('在此设备使用图片预设', () => applyPicture({ imageX: -1, imageY: -1, imageScale: 0 }));
+            fine.classList.add('tle-picture-tuning');
+            fine.append(element('small', '水平 0% 为左，垂直 0% 为上。定位填 -1 或缩放填 0 时沿用该设备的预设。'), preset);
+        }
+        card.append(fine);
+    }
+    for (const [key, field] of all) if (!quick.has(key) && !fineKeys.includes(key)) add(details, key, field);
     if (details.childElementCount > 1) card.append(details);
-    body.append(card);
+    container.append(card);
 }
 
 function editorLink(label, target) {
@@ -861,6 +979,66 @@ function editorLink(label, target) {
         setMessage('');
         renderBody();
     });
+}
+
+function activeThemeFlow() {
+    return themeFlow?.id === draft?.active ? themeFlow : undefined;
+}
+
+function openThemeStep(step) {
+    if (step === 'review' && page !== 'review') reviewReturn = page;
+    page = step;
+    setMessage('');
+    renderBody();
+    body.querySelector('.tle-theme-steps [aria-current="step"]')?.focus({ preventScroll: true });
+}
+
+function availableCopyName(name, label) {
+    const names = new Set(Object.values(draft.templates).map(({ name }) => name));
+    const makeName = suffix => name.slice(0, 80 - suffix.length) + suffix;
+    let result = makeName(' · ' + label);
+    for (let number = 2; names.has(result); number++) result = makeName(' · ' + label + ' ' + number);
+    return result;
+}
+
+function themeFlowButton() {
+    return button(activeThemeFlow() ? '继续制作主题' : '做一套主题', startThemeFlow);
+}
+
+function startThemeFlow() {
+    const active = activeThemeFlow();
+    if (active) {
+        openThemeStep(active.step);
+        return;
+    }
+    if (invalidUrls.size) return setMessage('请先修正或清空待修正的图片链接。');
+    const original = current();
+    const name = availableCopyName(original.name, '副本');
+    try {
+        const source = structuredClone(original);
+        addTemplate({ ...structuredClone(source), name }, id => {
+            themeFlow = { id, source, step: 'ai', material: '', fullMaterials: false };
+            page = 'ai';
+        });
+        body.querySelector('.tle-theme-steps [aria-current="step"]')?.focus({ preventScroll: true });
+        setMessage('已从原模板建立副本草稿。');
+    } catch (error) {
+        setMessage(error.message);
+    }
+}
+
+function renderThemeSteps(flow) {
+    flow.step = page;
+    const bar = element('section', '', 'tle-edit-card tle-theme-flow');
+    const list = element('nav', '', 'tle-segments tle-theme-steps');
+    list.setAttribute('aria-label', '主题制作步骤');
+    for (const [index, [key, label]] of themeSteps.entries()) {
+        const control = button((index + 1) + ' ' + label, () => { if (page !== key) openThemeStep(key); });
+        if (page === key) control.setAttribute('aria-current', 'step');
+        list.append(control);
+    }
+    bar.append(element('h3', '做一套主题'), list);
+    body.append(bar);
 }
 
 function renderAiLayout() {
@@ -1262,11 +1440,12 @@ const commonMaterials = [
     ['input', '输入栏背景'], ['sendButton', '发送图标'], ['wandButton', '魔杖图标'],
     ...Object.entries(MENUS).map(([id, menu]) => ['menus.' + id, menu.label + '背景']),
 ];
+const materialAliases = new Map([...commonMaterials, ...appearanceMap.filter(([, , slot]) => slot.startsWith('edge-'))]);
+const materialName = key => materialAliases.get(key) ?? SECTIONS[key].label;
 
-function renderMaterialBatch() {
-    const node = element('details', '', 'tle-ui-disclosure tle-material-batch');
+function renderMaterialSource(label, successMessage) {
     const sourceList = element('select', '', 'text_pole');
-    sourceList.setAttribute('aria-label', '批量素材来源');
+    sourceList.setAttribute('aria-label', label + '来源');
     let sources = [];
     let source = '';
     function refreshSources() {
@@ -1284,7 +1463,7 @@ function renderMaterialBatch() {
     const urlInput = element('input', '', 'text_pole');
     urlInput.type = 'url';
     urlInput.placeholder = '或粘贴 HTTPS 图片链接';
-    urlInput.setAttribute('aria-label', '批量素材图片 URL');
+    urlInput.setAttribute('aria-label', label + '图片 URL');
     urlInput.addEventListener('input', () => {
         source = '';
         sourceList.value = '';
@@ -1295,13 +1474,23 @@ function renderMaterialBatch() {
         urlInput.placeholder = source ? '已选素材' : '或粘贴 HTTPS 图片链接';
     });
     const photos = createPhotoPicker({
-        label: '批量素材', setMessage, urlInput,
-        successMessage: '已选图片，请勾选要应用的位置。',
+        label, setMessage, urlInput, successMessage,
         onSelect(url) {
             source = url;
-            rememberMaterial(url, '批量素材');
+            rememberMaterial(url, label);
+            refreshSources();
         },
     });
+    return {
+        controls: [sourceList, urlInput, photos],
+        refreshSources,
+        read: () => urlInput.value.trim() ? normalizeUrl(urlInput.value) : source,
+    };
+}
+
+function renderMaterialBatch() {
+    const node = element('details', '', 'tle-ui-disclosure tle-material-batch');
+    const asset = renderMaterialSource('批量素材', '已选图片，请勾选要应用的位置。');
     const layerList = element('select', '', 'text_pole');
     layerList.setAttribute('aria-label', '批量挂图设备');
     layerList.add(new Option('只改当前设备', 'current'));
@@ -1338,7 +1527,7 @@ function renderMaterialBatch() {
         const positions = [...checks].filter(([, input]) => input.checked).map(([key]) => key);
         if (!positions.length) return setMessage('请至少勾选一个素材位置。');
         const layers = layerList.value === 'both' ? devices : [device];
-        const url = urlInput.value.trim() ? normalizeUrl(urlInput.value) : source;
+        const url = asset.read();
         if (!url) return setMessage('请先选择照片或填写有效的 HTTPS 图片链接。');
         draft.templates[draft.active] = applyMaterialBatch(current(), url, positions, layers);
         for (const layer of layers) {
@@ -1351,8 +1540,85 @@ function renderMaterialBatch() {
         body.querySelector('.tle-material-shelf').open = true;
         setMessage('已更新 ' + positions.length + ' 个位置。可一次撤销整批修改。');
     });
-    node.append(element('summary', '批量换素材'), sourceList, urlInput, photos, layerList, shortcuts, targets, more, apply);
-    return { node, refreshSources };
+    node.append(element('summary', '批量换素材'), ...asset.controls, layerList, shortcuts, targets, more, apply);
+    return { node, refreshSources: asset.refreshSources };
+}
+
+function renderMaterialReplacement(read, rerender) {
+    const node = element('details', '', 'tle-ui-disclosure tle-material-replacement');
+    const summary = element('summary');
+    const asset = renderMaterialSource('替换素材', '已选新图，点「替换所选位置」预览。');
+    const shortcuts = element('div', '', 'tle-actions');
+    const targets = element('div', '', 'tle-material-batch-targets');
+    const count = element('small');
+    count.setAttribute('role', 'status');
+    let original;
+    let template;
+    let choices = [];
+    const selected = () => choices.filter(({ input }) => input.checked);
+    const apply = button('替换所选位置', () => {
+        if (photoPending()) return setMessage('正在处理照片，请稍候。');
+        const url = asset.read();
+        if (!url) return setMessage('请先选择照片或填写有效的 HTTPS 图片链接。');
+        if (url === original) return setMessage('请选择一张不同的图片。');
+        const matches = selected();
+        const previous = current();
+        const next = replaceMaterialUses(previous, original, url, matches);
+        if (next === previous) return setMessage('请勾选要替换的位置。');
+        draft.templates[draft.active] = next;
+        for (const { key, device } of matches) invalidUrls.delete(key + '/' + device);
+        rememberMaterial(url, '替换素材');
+        refreshPreview();
+        updateStatus();
+        rerender(true);
+        const control = body.querySelector('.tle-material-replacement:not([hidden]) > summary') ??
+            body.querySelector('#tle-field-url, .tle-menu-background input[type=url]');
+        control?.focus({ preventScroll: true });
+        control?.scrollIntoView({ block: 'nearest' });
+        setMessage('已换图 ' + matches.length + ' 处。可一次撤销。');
+    });
+    function updateCount() {
+        const total = selected().length;
+        count.textContent = '已选 ' + total + ' 处';
+        apply.disabled = total === 0;
+    }
+    for (const [layer, label] of [['desktop', '仅勾选桌面'], ['mobile', '仅勾选手机'], ['', '勾选全部']]) {
+        shortcuts.append(button(label, () => {
+            for (const choice of choices) choice.input.checked = !layer || choice.device === layer;
+            updateCount();
+        }));
+    }
+    refreshMaterialReplacement = () => {
+        const source = read();
+        if (source === original && template === current()) return;
+        original = source;
+        template = current();
+        const uses = findMaterialUses(template, original);
+        node.hidden = uses.length < 2;
+        node.open = false;
+        summary.textContent = '替换同图（' + uses.length + ' 处）';
+        targets.replaceChildren();
+        choices = uses.map(use => {
+            const { device, key, inherited } = use;
+            const input = element('input');
+            input.type = 'checkbox';
+            input.checked = true;
+            input.addEventListener('change', updateCount);
+            const row = element('label', '', 'tle-checkbox');
+            const name = materialName(key);
+            const title = (device === 'mobile' ? '手机' : '桌面') + ' · ' + name;
+            row.append(input, title + (inherited ? '（沿用上层）' : ''));
+            targets.append(row);
+            return { ...use, input };
+        });
+        updateCount();
+    };
+    node.addEventListener('toggle', () => {
+        if (node.open) asset.refreshSources();
+    });
+    node.append(summary, shortcuts, targets, count, ...asset.controls, apply);
+    refreshMaterialReplacement();
+    return node;
 }
 
 const materialStatusLabels = {
@@ -1361,23 +1627,82 @@ const materialStatusLabels = {
     empty: '未设图片',
     hidden: '已隐藏图片',
     invalid: '链接待修正',
+    failed: '图片加载失败',
 };
 
-function materialStatus(template, key) {
+function materialStatus(template, key, { own, effective } = materialImage(template, key, device)) {
     if (invalidUrls.has(key + '/' + device)) return 'invalid';
-    let own;
-    let effective;
-    if (key.startsWith('menus.')) {
-        const id = key.slice(6);
-        own = template.menus?.[id]?.[device]?.panel?.background;
-        effective = menuView(template.menus, id, device === 'mobile').panel.background;
-    } else {
-        own = template[device][key]?.url;
-        effective = effectiveFields(template, device, key).url;
-    }
     if (effective === '') return 'hidden';
     if (!effective) return 'empty';
+    if (images.get(effective)?.status === 'failed') return 'failed';
     return own === undefined ? 'inherited' : 'set';
+}
+
+function materialPreview(url) {
+    const preview = element('span', '', 'tle-theme-material-preview');
+    preview.setAttribute('aria-hidden', 'true');
+    if (images.get(url)?.status !== 'loaded') return preview;
+    const photo = element('img');
+    photo.alt = '';
+    photo.referrerPolicy = 'no-referrer';
+    photo.loading = 'lazy';
+    photo.src = url;
+    preview.append(photo);
+    return preview;
+}
+
+function linkedImageName(url) {
+    const link = new URL(url);
+    const file = link.pathname.split('/').filter(Boolean).at(-1);
+    let title = file ?? link.hostname;
+    try { title = decodeURIComponent(title); } catch { /* Keep undecodable URL escapes visible. */ }
+    return { title, hostname: link.hostname };
+}
+
+function renderImageInventory(results, favorites, choose, matches, usageDetails) {
+    const open = new Set([...usageDetails].filter(([, detail]) => detail.open).map(([url]) => url));
+    usageDetails.clear();
+    const nodes = [];
+    for (const [url, uses] of groupMaterialUses(current())) {
+        const first = uses.find(use => use.device === device) ?? uses[0];
+        const local = url.startsWith('data:');
+        const { title: filename, hostname } = local
+            ? { title: materialName(first.key), hostname: '本地照片' } : linkedImageName(url);
+        const title = favorites.get(url) ?? filename;
+        const status = images.get(url)?.status;
+        if (materialIndex.imageFilter === 'failed' && status !== 'failed') continue;
+        const placements = uses.map(use => [
+            use.device === 'mobile' ? '手机' : '桌面', materialName(use.key),
+            use.key.startsWith('chatFrame') ? '消息边框 消息区四边' : '',
+        ].join(' '));
+        if (!matches([title, filename, hostname, ...placements].join(' '))) continue;
+
+        const card = element('article', '', 'tle-material-image-card');
+        const header = element('div', '', 'tle-material-image-header');
+        const text = element('div');
+        const desktop = uses.filter(use => use.device === 'desktop').length;
+        const sizes = ['桌面 ' + desktop + ' 处', '手机 ' + (uses.length - desktop) + ' 处'];
+        text.append(element('strong', title), element('small', sizes.join(' · ')), element('small', hostname));
+        if (status === 'failed') text.append(element('small', '图片加载失败', 'tle-material-state'));
+        else if (status === 'loading') text.append(element('small', '正在加载', 'tle-material-state'));
+
+        const replace = button('替换', () => choose(first.key, first.device, uses.length > 1));
+        replace.setAttribute('aria-label', '替换图片 · ' + title);
+        header.append(materialPreview(url), text, replace);
+        const detail = element('details', '', 'tle-material-image-uses');
+        detail.open = open.has(url);
+        detail.append(element('summary', '查看用图位置'));
+        const links = element('div', '', 'tle-actions');
+        for (const use of uses) {
+            const label = (use.device === 'mobile' ? '手机' : '桌面') + ' · ' + materialName(use.key);
+            links.append(button(label, () => choose(use.key, use.device)));
+        }
+        detail.append(links);
+        usageDetails.set(url, detail);
+        card.append(header, detail);
+        nodes.push(card);
+    }
+    results.replaceChildren(...nodes);
 }
 
 function renderMaterialIndex(options, choose) {
@@ -1385,54 +1710,92 @@ function renderMaterialIndex(options, choose) {
     details.open = materialIndex.open;
     const input = element('input', '', 'text_pole');
     input.type = 'search';
-    input.setAttribute('aria-label', '搜索素材位置');
-    input.placeholder = '例如：消息边框、挂件、魔杖';
     input.value = materialIndex.query;
     const filter = element('select', '', 'text_pole');
     filter.setAttribute('aria-label', '筛选素材状态');
-    for (const [key, label] of [
+    const positionFilters = [
         ['all', '全部状态'], ['withImage', '已有图片'], ['withoutImage', '没有图片'],
-        ['inherited', '沿用上层图片'], ['invalid', '链接待修正'],
-    ]) filter.add(new Option(label, key));
-    filter.value = materialIndex.filter;
+        ['inherited', '沿用上层图片'], ['invalid', '链接待修正'], ['failed', '图片加载失败'],
+    ];
+    const imageFilters = [['all', '全部图片'], ['failed', '图片加载失败']];
+    const modes = element('div', '', 'tle-segments');
+    modes.setAttribute('role', 'group');
+    modes.setAttribute('aria-label', '素材清单视图');
+    const byPosition = button('按位置', () => switchMode('positions'));
+    const byImage = button('按图片', () => switchMode('images'));
+    modes.append(byPosition, byImage);
     const filters = element('div', '', 'tle-material-index-filters');
     filters.append(input, filter);
     const count = element('small');
     count.setAttribute('aria-live', 'polite');
     const results = element('div', '', 'tle-material-index-results');
-    const aliases = new Map([...commonMaterials, ...appearanceMap.filter(([, , slot]) => slot.startsWith('edge-'))]);
+    const usageDetails = new Map();
+    function setModeControls() {
+        const byAsset = materialIndex.mode === 'images';
+        byPosition.setAttribute('aria-pressed', String(!byAsset));
+        byImage.setAttribute('aria-pressed', String(byAsset));
+        input.setAttribute('aria-label', byAsset ? '搜索已用图片' : '搜索素材位置');
+        input.placeholder = byAsset ? '搜索文件名、域名或位置' : '例如：消息边框、挂件、魔杖';
+        filter.replaceChildren(...(byAsset ? imageFilters : positionFilters).map(([value, label]) => new Option(label, value)));
+        filter.value = byAsset ? materialIndex.imageFilter : materialIndex.filter;
+    }
+    function switchMode(mode) {
+        materialIndex.mode = mode;
+        setModeControls();
+        refreshMaterialIndex();
+        results.scrollTop = 0;
+    }
     refreshMaterialIndex = () => {
         if (!details.open) return;
-        const template = current();
         const words = materialIndex.query.toLowerCase().trim().split(/\s+/).filter(Boolean);
-        results.replaceChildren();
+        const matches = searchable => {
+            const text = searchable.toLowerCase();
+            return words.every(word => text.includes(word));
+        };
+        const scroll = results.scrollTop;
+        const byAsset = materialIndex.mode === 'images';
+        if (byAsset) {
+            const favorites = new Map(draft.materialFavorites.map(({ url, label }) => [url, label]));
+            renderImageInventory(results, favorites, choose, matches, usageDetails);
+        } else renderPositionResults(matches);
+        const total = results.childElementCount;
+        count.textContent = total ? '匹配 ' + total + (byAsset ? ' 张图片' : ' 个位置') :
+            (byAsset ? '没有匹配的已用图片' : '没有匹配的素材位置');
+        results.scrollTop = scroll;
+    };
+    function renderPositionResults(matches) {
+        const template = current();
+        const buttons = [];
         for (const { value: key, text: title, parentElement } of options) {
-            const display = aliases.get(key) ?? title;
+            const display = materialName(key);
             const searchable = [title, display, parentElement.label, key,
-                ...(key.startsWith('chatFrame') ? ['消息边框', '消息区四边'] : [])].join(' ').toLowerCase();
-            if (!words.every(word => searchable.includes(word))) continue;
-            const state = materialStatus(template, key);
+                ...(key.startsWith('chatFrame') ? ['消息边框', '消息区四边'] : [])].join(' ');
+            if (!matches(searchable)) continue;
+            const image = materialImage(template, key, device);
+            const state = materialStatus(template, key, image);
             const filterKey = materialIndex.filter;
             if (filterKey === 'withImage' && !['set', 'inherited'].includes(state)) continue;
             if (filterKey === 'withoutImage' && !['empty', 'hidden'].includes(state)) continue;
-            if (['inherited', 'invalid'].includes(filterKey) && filterKey !== state) continue;
+            if (['inherited', 'invalid', 'failed'].includes(filterKey) && filterKey !== state) continue;
             const result = button('', () => {
                 materialIndex.open = false;
                 choose(key);
             });
             result.setAttribute('aria-pressed', String(materialKey === key));
-            result.append(element('span', display), element('small', materialStatusLabels[state], 'tle-material-state'));
-            results.append(result);
+            result.classList.add('tle-material-position-result');
+            result.append(materialPreview(image.effective), element('span', display), element('small', materialStatusLabels[state], 'tle-material-state'));
+            buttons.push(result);
         }
-        count.textContent = results.childElementCount ? '匹配 ' + results.childElementCount + ' 个位置' : '没有匹配的素材位置';
-    };
+        results.replaceChildren(...buttons);
+    }
     input.addEventListener('input', () => {
         materialIndex.query = input.value;
         refreshMaterialIndex();
         results.scrollTop = 0;
     });
     filter.addEventListener('change', () => {
-        materialIndex.filter = filter.value;
+        if (materialIndex.mode === 'images') materialIndex.imageFilter = filter.value;
+        else materialIndex.filter = filter.value;
         refreshMaterialIndex();
         results.scrollTop = 0;
     });
@@ -1441,9 +1804,145 @@ function renderMaterialIndex(options, choose) {
         materialIndex.open = details.open;
         refreshMaterialIndex();
     });
-    details.append(element('summary', '素材清单与搜索'), filters, count, results);
+    details.append(element('summary', '素材清单与搜索'), modes, filters, count, results);
+    setModeControls();
     refreshMaterialIndex();
-    return details;
+    return {
+        node: details,
+        openImages() {
+            materialIndex.open = details.open = true;
+            switchMode('images');
+            byImage.focus({ preventScroll: true });
+            details.scrollIntoView({ block: 'nearest' });
+        },
+    };
+}
+
+function materialDevices() {
+    const row = element('div', '', 'tle-segments');
+    row.setAttribute('role', 'group');
+    row.setAttribute('aria-label', '素材编辑设备');
+    for (const [key, label] of [['desktop', '桌面设置'], ['mobile', '手机设置']]) {
+        const control = button(label, () => {
+            device = key;
+            renderBody();
+            body.querySelector('.tle-segments[aria-label="素材编辑设备"] [aria-pressed="true"]')?.focus({ preventScroll: true });
+        });
+        control.setAttribute('aria-pressed', String(device === key));
+        row.append(control);
+    }
+    return row;
+}
+
+function renderMaterialEditor(key, container, inline = false) {
+    function rerender(preserveScroll = false) {
+        const scroll = body.scrollTop;
+        renderBody();
+        if (inline || preserveScroll) body.scrollTop = scroll;
+    }
+    const read = () => materialImage(current(), key, device).effective;
+    const replacement = renderMaterialReplacement(read, rerender);
+    if (key.startsWith('menus.')) {
+        const id = key.slice(6);
+        const shelf = renderMaterialShelf(read, url => {
+            menuEditor.setBackground(id, device, url);
+            rerender();
+        }, MENUS[id].label + '背景');
+        const controls = menuEditor.renderBackground(id, device, rerender, rememberMaterial);
+        container.append(...(inline ? [controls, replacement, shelf] : [shelf, replacement, controls]));
+        return;
+    }
+    section = key;
+    zone = Object.keys(zones).find(name => zones[name][1].includes(key)) ?? 'other';
+    const descriptor = SECTIONS[key];
+    const shelf = renderMaterialShelf(read, url => {
+        invalidUrls.delete(key + '/' + device);
+        changeField('url', url);
+        rerender();
+    }, descriptor.label);
+    if (!inline) container.append(shelf, replacement);
+    renderAppearanceFields(descriptor, true, container, rerender);
+    if (inline) container.append(replacement, shelf);
+}
+
+function renderThemeMaterials(flow) {
+    const positions = [
+        ...commonMaterials.slice(0, 4),
+        ...appearanceMap.filter(([, , slot]) => slot.startsWith('edge-')).map(([key, label]) => [key, label]),
+        ...commonMaterials.slice(4),
+    ];
+    const heading = element('section', '', 'tle-edit-card');
+    const links = element('div', '', 'tle-actions');
+    links.append(button('打开完整素材设置', () => {
+        flow.fullMaterials = true;
+        if (flow.material) materialKey = flow.material;
+        renderBody();
+    }), button('下一步 · 核对保存', () => openThemeStep('review')));
+    heading.append(element('h3', '按位置换图'), materialDevices(), links);
+    body.append(heading);
+    const list = element('div', '', 'tle-theme-materials');
+    body.append(list);
+    const entries = [];
+    for (const [key, label] of positions) {
+        const row = element('section', '', 'tle-theme-material');
+        row.dataset.materialLocation = key;
+        const photo = element('img');
+        photo.alt = '';
+        photo.loading = 'lazy';
+        photo.referrerPolicy = 'no-referrer';
+        photo.addEventListener('error', () => { photo.hidden = true; });
+        const thumbnail = element('span', '', 'tle-theme-material-preview');
+        thumbnail.append(photo);
+        const title = element('div');
+        const state = element('small');
+        title.append(element('strong', label), state);
+        const expanded = flow.material === key;
+        const controls = button(expanded ? '收起' : '换图', () => {
+            const scroll = body.scrollTop;
+            flow.material = expanded ? '' : key;
+            renderBody();
+            body.scrollTop = scroll;
+            const updated = [...body.querySelectorAll('[data-material-location]')].find(item => item.dataset.materialLocation === key);
+            if (!updated) return;
+            updated.querySelector('.tle-theme-material-open')?.focus({ preventScroll: true });
+            updated.querySelector('.tle-theme-material-header')?.scrollIntoView({ block: 'nearest' });
+        }, 'menu_button tle-theme-material-open');
+        controls.setAttribute('aria-label', (expanded ? '收起' : '换图') + ' · ' + label);
+        controls.setAttribute('aria-expanded', String(expanded));
+        const line = element('div', '', 'tle-theme-material-header');
+        line.append(thumbnail, title, controls);
+        row.append(line);
+        list.append(row);
+        entries.push({ key, photo, state });
+        if (expanded) renderMaterialEditor(key, row, true);
+    }
+    refreshFlowMaterials = () => {
+        const template = current();
+        for (const { key, photo, state } of entries) {
+            const image = materialImage(template, key, device);
+            if (image.effective) {
+                if (photo.getAttribute('src') !== image.effective) {
+                    photo.hidden = false;
+                    photo.src = image.effective;
+                }
+            } else {
+                photo.hidden = true;
+                photo.removeAttribute('src');
+            }
+            state.textContent = materialStatusLabels[materialStatus(template, key, image)];
+        }
+    };
+    refreshFlowMaterials();
+    refreshThumbnail();
+}
+
+function openMaterialShelf(selector) {
+    const shelf = body.querySelector('.tle-material-shelf');
+    const disclosure = shelf.querySelector(selector);
+    shelf.open = disclosure.open = true;
+    const heading = disclosure.querySelector('summary');
+    heading.focus({ preventScroll: true });
+    heading.scrollIntoView({ block: 'start' });
 }
 
 function renderMaterials() {
@@ -1464,22 +1963,25 @@ function renderMaterials() {
     for (const [id, menu] of Object.entries(MENUS)) menus.append(new Option(menu.label + '背景', 'menus.' + id));
     select.append(menus);
     select.value = materialKey;
-    function choose(key) {
+    function choose(key, layer = device, replace = false) {
         materialKey = key;
+        device = layer;
         setMessage('');
         renderBody();
+        if (replace) {
+            const details = body.querySelector('.tle-material-replacement:not([hidden])');
+            if (details) {
+                details.open = true;
+                const summary = details.querySelector('summary');
+                summary.focus({ preventScroll: true });
+                summary.scrollIntoView({ block: 'nearest' });
+                return;
+            }
+        }
         const field = body.querySelector('#tle-field-url, .tle-menu-background input[type=url]');
         field?.scrollIntoView({ block: 'nearest' });
     }
     select.addEventListener('change', () => choose(select.value));
-    const devicesRow = element('div', '', 'tle-segments');
-    devicesRow.setAttribute('role', 'group');
-    devicesRow.setAttribute('aria-label', '素材编辑设备');
-    for (const [key, label] of [['desktop', '桌面设置'], ['mobile', '手机设置']]) {
-        const control = button(label, () => { device = key; renderBody(); });
-        control.setAttribute('aria-pressed', String(device === key));
-        devicesRow.append(control);
-    }
     const positions = element('div', '', 'tle-actions tle-material-positions');
     positions.setAttribute('role', 'group');
     positions.setAttribute('aria-label', '常用素材位置');
@@ -1488,44 +1990,20 @@ function renderMaterials() {
         control.setAttribute('aria-pressed', String(materialKey === key));
         positions.append(control);
     }
-    function openShelf(selector) {
-        const shelf = body.querySelector('.tle-material-shelf');
-        const disclosure = shelf.querySelector(selector);
-        shelf.open = disclosure.open = true;
-        const heading = disclosure.querySelector('summary');
-        heading.focus({ preventScroll: true });
-        heading.scrollIntoView({ block: 'start' });
-    }
-    const batch = button('直接批量换图', () => openShelf('.tle-material-batch'));
-    const favoriteShortcut = button('打开素材收藏', () => openShelf('.tle-material-favorites'));
+    const batch = button('直接批量换图', () => openMaterialShelf('.tle-material-batch'));
+    const favoriteShortcut = button('打开素材收藏', () => openMaterialShelf('.tle-material-favorites'));
+    const index = renderMaterialIndex([...select.options], choose);
     const materialTools = element('div', '', 'tle-actions');
-    materialTools.append(batch, favoriteShortcut);
-    card.append(element('h3', '换素材'), devicesRow, positions, materialTools, select, renderMaterialIndex([...select.options], choose));
+    materialTools.append(button('查看已用图片', index.openImages), batch, favoriteShortcut);
+    const flow = activeThemeFlow();
+    if (flow) materialTools.append(button('返回换图清单', () => {
+        flow.fullMaterials = false;
+        renderBody();
+    }));
+    card.append(element('h3', '换素材'), materialDevices(), positions, materialTools, select, index.node);
     body.append(card);
-    if (materialKey.startsWith('menus.')) {
-        const id = materialKey.slice(6);
-        const label = MENUS[id].label + '背景';
-        body.append(renderMaterialShelf(
-            () => menuView(current().menus, id, device === 'mobile').panel.background,
-            url => { menuEditor.setBackground(id, device, url); renderBody(); },
-            label,
-        ), menuEditor.renderBackground(id, device, renderBody, rememberMaterial));
-    } else {
-        section = materialKey;
-        zone = Object.keys(zones).find(name => zones[name][1].includes(section)) ?? 'other';
-        const descriptor = SECTIONS[section];
-        body.append(renderMaterialShelf(
-            () => effectiveFields(current(), device, section).url,
-            url => {
-                invalidUrls.delete(section + '/' + device);
-                changeField('url', url);
-                renderBody();
-            },
-            descriptor.label,
-        ));
-        renderAppearanceFields(descriptor, true);
-        refreshThumbnail();
-    }
+    renderMaterialEditor(materialKey, body);
+    refreshThumbnail();
     const shortcuts = element('div', '', 'tle-actions');
     shortcuts.append(editorLink('返回界面外观', 'appearance'), editorLink('导入 AI 排版', 'ai'));
     body.append(renderFrameBatch(), shortcuts);
@@ -1533,7 +2011,7 @@ function renderMaterials() {
 
 function renderAppearanceNavigation() {
     const shortcuts = element('div', '', 'tle-actions');
-    shortcuts.append(editorLink('导入 AI 排版', 'ai'), editorLink('换素材', 'materials'));
+    shortcuts.append(themeFlowButton(), editorLink('导入 AI 排版', 'ai'), editorLink('换素材', 'materials'));
     body.append(shortcuts);
     const devices = element('div', '', 'tle-segments tle-appearance-devices');
     devices.setAttribute('aria-label', '外观编辑设备');
@@ -1599,12 +2077,15 @@ const menuReviewLabels = {
     width: '宽度', height: '最大高度', columns: '列数', gap: '间距',
     background: '背景图片', fill: '底色', opacity: '不透明度', radius: '圆角',
     position: '打开位置', icon: '图标图片', color: '文字颜色', textSize: '字号',
+    size: '图片缩放', imageX: '图片水平位置', imageY: '图片垂直位置', imageScale: '图片自定缩放',
+    order: '顺序', group: '分组', pinned: '置顶', label: '显示名称',
 };
 
 function reviewFieldText(field, config, device) {
     function show(value) {
         if (value === undefined) return device === 'mobile' ? '继承' : '默认';
         if (config.type === 'url') return value ? (value.startsWith('data:') ? '本地照片' : '链接图片') : '已清空';
+        if (typeof value === 'boolean') return value ? '是' : '否';
         return config.options?.[value] ?? (String(value) + (config.unit ?? ''));
     }
     const from = show(field.from);
@@ -1612,48 +2093,276 @@ function reviewFieldText(field, config, device) {
     return config.label + ' · ' + (config.type === 'url' && from === to ? '更换' + to : from + ' → ' + to);
 }
 
+function reviewBaseline() {
+    return activeThemeFlow()?.source ?? openingLayout;
+}
+
+function reviewFieldConfig(change, field, baseline, selected, item) {
+    if (change.section) return SECTIONS[change.section].fields[field.key];
+    const label = menuReviewLabels[field.key];
+    return {
+        label: item ? label : menuReviewLabels[field.area] + ' · ' + label,
+        type: ['background', 'icon'].includes(field.key) ? 'url' : 'text',
+        unit: ['width', 'height', 'gap', 'radius', 'textSize'].includes(field.key) ? ' px' : ['opacity', 'imageX', 'imageY', 'imageScale'].includes(field.key) ? '%' : '',
+        options: field.key === 'group' ? {
+            ...baseline.menus?.[change.menu]?.groups, ...selected.menus?.[change.menu]?.groups,
+            '': '不分组', more: '更多',
+        } : field.key === 'size' ? IMAGE_SIZE_OPTIONS : undefined,
+    };
+}
+
+function jumpToReviewField(layer, change, field, item) {
+    if (change.section) {
+        page = 'appearance';
+        device = layer;
+        chooseAppearance(change.section, field.key);
+        return;
+    }
+    page = 'menus';
+    const id = change.menu === 'global' ? 'wand' : change.menu;
+    const scope = item ? 'item' : change.menu === 'global' ? 'global' : field.area;
+    menuEditor.select({ id, scope, key: item }, layer === 'mobile');
+    pickedMenu = Boolean(item);
+    setMessage('');
+    renderBody();
+    const fieldSelector = '[data-menu-field="' + field.key + '"]';
+    const row = item ? [...body.querySelectorAll('[data-menu-row]')].find(node => node.dataset.menuRow === item) : undefined;
+    const control = item
+        ? row?.querySelector('button' + fieldSelector + ', ' + fieldSelector + ' :is(input, select, button)') ?? row?.querySelector('.tle-item-open')
+        : body.querySelector('[data-menu-area="' + field.area + '"]' + fieldSelector + ' :is(input, select)');
+    const disclosure = control?.closest('details');
+    if (disclosure) disclosure.open = true;
+    control?.focus({ preventScroll: true });
+    control?.scrollIntoView({ block: 'center' });
+    if (!control && item) setMessage('该菜单项当前不可用。');
+}
+
+function restoreFromReview(updates, areaId) {
+    try {
+        draft.templates[draft.active] = restoreReviewFields(current(), reviewBaseline(), updates);
+    } catch (error) {
+        setMessage(error.message);
+        return;
+    }
+    for (const { id, layer, change, field } of updates) {
+        reviewSelection.delete(id);
+        if (change.section && field.key === 'url') invalidUrls.delete(change.section + '/' + layer);
+    }
+    redrawReview(areaId);
+    refreshPreview();
+    updateStatus();
+    setMessage(updates.length === 1 ? '已恢复这一项。可以撤销。' : '已恢复 ' + updates.length + ' 项。可以一次撤销。');
+}
+
+function redrawReview(areaId) {
+    const scroll = body.scrollTop;
+    for (const area of body.querySelectorAll('details[data-review-area]')) {
+        if (area.open) openReviewAreas.add(area.dataset.reviewArea);
+        else openReviewAreas.delete(area.dataset.reviewArea);
+    }
+    renderBody();
+    body.scrollTop = scroll;
+    if (areaId) {
+        const detail = [...body.querySelectorAll('[data-review-area]')].find(node => node.dataset.reviewArea === areaId);
+        (detail?.querySelector('summary') ?? body.querySelector('.tle-review-inspect'))?.focus({ preventScroll: true });
+    }
+}
+
+function reviewFieldRow(update, baseline, selected, areaId, checks) {
+    const { id, layer, change, field, item } = update;
+    const config = reviewFieldConfig(change, field, baseline, selected, item);
+    const row = element('li', '', 'tle-review-field');
+    const controls = element('div', '', 'tle-actions');
+    const jump = button('定位控件', () => jumpToReviewField(layer, change, field, item));
+    jump.setAttribute('aria-label', '定位控件 · ' + config.label);
+    const caption = reviewFieldText(field, config, layer);
+    if (checks) {
+        const label = element('label', '', 'tle-checkbox');
+        const check = element('input');
+        check.type = 'checkbox';
+        check.checked = reviewSelection.has(id);
+        check.setAttribute('aria-label', '勾选恢复 · ' + config.label);
+        label.append(check, caption);
+        checks.push({ check, update });
+        row.append(label);
+    } else {
+        const restore = button('恢复此项', () => restoreFromReview([update], areaId));
+        restore.setAttribute('aria-label', '恢复此项 · ' + config.label);
+        row.append(element('span', caption));
+        controls.append(restore);
+    }
+    controls.prepend(jump);
+    row.append(controls);
+    return row;
+}
+
+function renderReviewControls(hasFieldChanges) {
+    const card = element('section', '', 'tle-edit-card');
+    const filters = element('div', '', 'tle-segments');
+    filters.setAttribute('role', 'group');
+    filters.setAttribute('aria-label', '筛选改动设备');
+    for (const [key, label] of [['all', '全部改动'], ['desktop', '只看桌面'], ['mobile', '只看手机']]) {
+        const control = button(label, () => {
+            reviewFilter = key;
+            redrawReview();
+            body.querySelector('.tle-review-filter [aria-pressed="true"]')?.focus({ preventScroll: true });
+        });
+        control.setAttribute('aria-pressed', String(reviewFilter === key));
+        filters.append(control);
+    }
+    filters.classList.add('tle-review-filter');
+    const toggle = button(reviewBatch ? '结束多选' : '多选恢复', () => {
+        reviewBatch = !reviewBatch;
+        if (!reviewBatch) reviewSelection.clear();
+        redrawReview();
+        body.querySelector('.tle-review-batch-toggle')?.focus({ preventScroll: true });
+    }, 'menu_button tle-review-batch-toggle');
+    toggle.setAttribute('aria-pressed', String(reviewBatch));
+    card.append(filters);
+    if (hasFieldChanges) card.append(toggle);
+    return card;
+}
+
 function renderReview() {
     const selected = current();
-    const changes = getLayoutReview(openingLayout, selected);
+    const baseline = reviewBaseline();
+    const flow = activeThemeFlow();
+    const changes = getLayoutReview(baseline, selected);
+    if (reviewSelectionOwner !== draft.active) {
+        reviewSelectionOwner = draft.active;
+        reviewSelection.clear();
+    }
     const intro = element('section', '', 'tle-edit-card');
     const actions = element('div', '', 'tle-actions');
     actions.append(
         button('返回继续编辑', () => { page = reviewReturn; renderBody(); }),
         button('对照酒馆实景', openComparison, 'menu_button tle-review-inspect'),
     );
-    intro.append(element('h3', '保存前核对'), element('small', '对照「' + openingLayout.name + '」与当前编辑的「' + selected.name + '」。'), actions);
-    body.append(intro);
+    intro.append(element('h3', '保存前核对'));
+    if (flow) {
+        const label = element('label', '新主题名称');
+        const name = element('input', '', 'text_pole');
+        name.type = 'text';
+        name.maxLength = 80;
+        name.value = selected.name;
+        name.addEventListener('input', () => {
+            const value = cleanName(name.value);
+            if (!value) return;
+            selected.name = value;
+            updateStatus();
+        });
+        name.addEventListener('blur', () => { name.value = selected.name; });
+        label.append(name);
+        intro.append(label);
+    }
+    intro.append(element('small', '对照「' + baseline.name + '」与当前草稿。'), actions);
+    const share = element('details', '', 'tle-ui-disclosure tle-review-sharing');
+    share.append(element('summary', '分享当前主题'), renderSharing());
+    body.append(intro, share);
+    const hasFieldChanges = devices.some(layer => changes[layer].length);
+    if (hasFieldChanges || invalidUrls.size || reviewFilter !== 'all') body.append(renderReviewControls(hasFieldChanges));
+    const visibleChecks = [];
+    const bulk = element('div', '', 'tle-actions tle-review-batch');
+    const counter = element('small');
+    counter.setAttribute('aria-live', 'polite');
+    const selectedUpdates = () => visibleChecks.filter(({ check }) => check.checked).map(({ update }) => update);
+    const clear = button('清空本范围勾选', () => {
+        for (const { check, update } of visibleChecks) {
+            check.checked = false;
+            reviewSelection.delete(update.id);
+        }
+        syncBulkControls();
+    });
+    const apply = button('恢复所选改动', () => {
+        const updates = selectedUpdates();
+        if (updates.length) restoreFromReview(updates, updates[0].areaId);
+    }, 'menu_button tle-primary');
+    const syncAreas = [];
+    function syncBulkControls() {
+        const count = selectedUpdates().length;
+        counter.textContent = '本范围已选 ' + count + ' 项';
+        clear.disabled = apply.disabled = count === 0;
+        for (const sync of syncAreas) sync();
+    }
+    bulk.append(counter, clear, apply);
+    if (reviewBatch && hasFieldChanges) body.append(bulk);
+
     let hasRecords = false;
     for (const layer of devices) {
-        if (!changes[layer].length) continue;
+        if ((reviewFilter !== 'all' && reviewFilter !== layer) || !changes[layer].length) continue;
         hasRecords = true;
         const group = element('section', '', 'tle-edit-card');
         group.append(element('h3', (layer === 'desktop' ? '桌面' : '手机') + ' · ' + changes[layer].length + ' 个区域'));
         for (const change of changes[layer]) {
             const descriptor = change.section ? SECTIONS[change.section] : undefined;
             const title = descriptor?.label ?? MENUS[change.menu]?.label ?? '全局菜单';
-            const count = change.fields.length + (change.itemCount ?? 0);
+            const count = change.fields.length + (change.items?.length ?? 0);
+            const areaId = layer + '/' + (change.section ?? 'menus.' + change.menu);
             const detail = element('details', '', 'tle-ui-disclosure');
+            detail.dataset.reviewArea = areaId;
+            detail.open = openReviewAreas.has(areaId);
+            detail.addEventListener('toggle', () => {
+                if (!detail.isConnected) return;
+                if (detail.open) openReviewAreas.add(areaId);
+                else openReviewAreas.delete(areaId);
+            });
             detail.append(element('summary', title + '（' + count + ' 项）'));
-            const list = element('ul', '', 'tle-review-list');
-            for (const field of change.fields) {
-                const config = descriptor?.fields[field.key] ?? {
-                    label: menuReviewLabels[field.area] + ' · ' + menuReviewLabels[field.key],
-                    type: ['background', 'icon'].includes(field.key) ? 'url' : 'text',
-                    unit: ['width', 'height', 'gap', 'radius', 'textSize'].includes(field.key) ? ' px'
-                        : field.key === 'opacity' ? '%' : '',
-                };
-                list.append(element('li', reviewFieldText(field, config, layer)));
+            const areaChecks = reviewBatch ? [] : undefined;
+            function appendFields(fields, item) {
+                const list = element('ul', '', 'tle-review-list');
+                for (const field of fields) {
+                    const id = JSON.stringify([areaId, item, field.area, field.key]);
+                    const update = { id, layer, change, field, item, areaId };
+                    list.append(reviewFieldRow(update, baseline, selected, areaId, areaChecks));
+                }
+                detail.append(list);
             }
-            if (change.itemCount) list.append(element('li', change.itemCount + ' 个菜单项目已改动'));
-            detail.append(list);
+            if (change.fields.length) appendFields(change.fields);
+            if (change.items?.length) {
+                const names = new Map(nativeMenus.items(change.menu).map(item => [item.key, item.label]));
+                const view = menuView(selected.menus, change.menu, layer === 'mobile');
+                for (const { key, fields } of change.items) {
+                    const name = view.items[key]?.label || names.get(key) || key;
+                    detail.append(element('h4', name));
+                    appendFields(fields, key);
+                }
+            }
+            if (areaChecks?.length) {
+                visibleChecks.push(...areaChecks);
+                const label = element('label', '', 'tle-checkbox');
+                const pickAll = element('input');
+                pickAll.type = 'checkbox';
+                label.append(pickAll, '勾选本区域');
+                detail.querySelector('summary').after(label);
+                syncAreas.push(() => {
+                    const count = areaChecks.filter(({ check }) => check.checked).length;
+                    pickAll.checked = count === areaChecks.length;
+                    pickAll.indeterminate = count > 0 && count < areaChecks.length;
+                });
+                function setChecked(check, update, checked) {
+                    check.checked = checked;
+                    if (checked) reviewSelection.add(update.id);
+                    else reviewSelection.delete(update.id);
+                }
+                pickAll.addEventListener('change', () => {
+                    for (const { check, update } of areaChecks) setChecked(check, update, pickAll.checked);
+                    syncBulkControls();
+                });
+                for (const { check, update } of areaChecks) {
+                    check.addEventListener('change', () => {
+                        setChecked(check, update, check.checked);
+                        syncBulkControls();
+                    });
+                }
+            }
             group.append(detail);
         }
         body.append(group);
     }
+    syncBulkControls();
     const extra = element('ul', '', 'tle-review-list');
     for (const id of changes.sharedMenus) extra.append(element('li', MENUS[id].label + '分组已改动'));
-    if (!equalSettings(openingLayout.layoutLocks, selected.layoutLocks)) extra.append(element('li', 'AI 尺寸锁定已改动'));
+    if (!equalSettings(baseline.layoutLocks, selected.layoutLocks)) extra.append(element('li', 'AI 尺寸锁定已改动'));
     for (const [id, savedTemplate] of Object.entries(saved.templates)) {
         const edited = draft.templates[id];
         if (!edited) extra.append(element('li', '删除模板「' + savedTemplate.name + '」'));
@@ -1661,24 +2370,28 @@ function renderReview() {
         else if (id !== draft.active && !equalSettings(savedTemplate, edited)) extra.append(element('li', '更新其他模板「' + edited.name + '」'));
     }
     for (const [id, edited] of Object.entries(draft.templates)) {
-        if (!Object.hasOwn(saved.templates, id)) extra.append(element('li', '新增模板「' + edited.name + '」'));
+        if (!Object.hasOwn(saved.templates, id)) {
+            extra.append(element('li', flow?.id === id ? '新增当前主题副本' : '新增模板「' + edited.name + '」'));
+        }
     }
-    if (draft.active !== openingTemplateId) extra.append(element('li', '切换到模板「' + selected.name + '」'));
+    if (draft.active !== openingTemplateId && !flow) extra.append(element('li', '切换到模板「' + selected.name + '」'));
     if (!equalSettings(saved.materialFavorites, draft.materialFavorites)) {
         extra.append(element('li', '素材收藏已改动（' + saved.materialFavorites.length + ' → ' + draft.materialFavorites.length + ' 张）'));
     }
+    if (!equalSettings(saved.quickAccess, draft.quickAccess)) extra.append(element('li', '我的常用已改动'));
     if (saved.auto !== draft.auto || saved.manual !== draft.manual) extra.append(element('li', '场景自动换模板设置已改动'));
-    if (extra.childElementCount) {
+    if (reviewFilter === 'all' && extra.childElementCount) {
         hasRecords = true;
         const card = element('section', '', 'tle-edit-card');
         card.append(element('h3', '模板与通用设置'), extra);
         body.append(card);
     }
-    if (invalidUrls.size) {
+    const invalidEntries = [...invalidUrls.keys()].filter(id => reviewFilter === 'all' || id.endsWith('/' + reviewFilter));
+    if (invalidEntries.length) {
         hasRecords = true;
         const card = element('section', '', 'tle-edit-card');
         card.append(element('h3', '链接待修正'));
-        for (const id of invalidUrls.keys()) {
+        for (const id of invalidEntries) {
             const [key, layer] = id.split('/');
             card.append(button((layer === 'mobile' ? '手机' : '桌面') + ' · ' + SECTIONS[key].label, () => {
                 page = 'appearance';
@@ -1688,12 +2401,361 @@ function renderReview() {
         }
         body.append(card);
     }
-    if (!hasRecords) body.append(element('p', '当前没有待保存的改动。'));
+    if (!hasRecords) body.append(element('p', reviewFilter === 'all'
+        ? '当前没有待保存的改动。' : '此设备没有待保存的改动。'));
+}
+
+function checkpointWorkspace() {
+    const flow = activeThemeFlow();
+    const session = aiSessions.get(draft.active);
+    const plan = { format: layoutFormat, version: 1, desktop: {}, mobile: {} };
+    for (const field of session?.proposal ?? []) {
+        (plan[field.device][field.area] ??= {})[field.key] = field.value;
+    }
+    return {
+        page: page === 'workbench' ? workbenchReturn : page, device, section, zone, materialKey, reviewReturn,
+        menu: menuEditor.position(),
+        invalid: [...invalidUrls],
+        flow,
+        ai: session ? { source: session.source.slice(0, 64 * 1024), scope: session.scope, excluded: [...session.excluded], plan } : undefined,
+        aiGoal,
+    };
+}
+
+async function parkCurrentDraft() {
+    if (applying) return;
+    if (photoPending()) return setMessage('正在处理照片，请稍候。');
+    if (status.dataset.dirty !== 'true' && !aiSessions.get(draft.active)?.source.trim() && !aiGoal.trim()) {
+        return setMessage('当前没有需要暂存的修改。');
+    }
+    if (parkedDraft && resumedParkedId !== parkedDraft.id &&
+        !window.confirm('已有暂存草稿。要用本次修改替换它吗？')) return;
+    const checkpoint = structuredClone({
+        version: 1, id: templateId(), revision: savedRevision,
+        ...checkpointSettings(saved, draft),
+        workspace: checkpointWorkspace(),
+    });
+    setMessage('正在暂存草稿…');
+    if (await persistEditorSettings(saved, savedRevision, checkpoint)) {
+        parkedDraft = checkpoint;
+        if (panel) closeEditor();
+    }
+}
+
+const editorPages = ['menus', 'appearance', 'templates', 'ai', 'materials', 'review'];
+const isMaterialPosition = key => typeof key === 'string' &&
+    (Object.hasOwn(SECTIONS, key) && Boolean(SECTIONS[key].fields.url) ||
+     key.startsWith('menus.') && Object.hasOwn(MENUS, key.slice(6)));
+
+function resumeWorkspace(workspace) {
+    page = editorPages.includes(workspace?.page) ? workspace.page : 'templates';
+    device = devices.includes(workspace?.device) ? workspace.device : device;
+    if (Object.hasOwn(SECTIONS, workspace?.section)) {
+        section = workspace.section;
+        zone = workspace.zone ? Object.keys(zones).find(key => zones[key][1].includes(section)) ?? 'other' : '';
+    }
+    materialKey = isMaterialPosition(workspace?.materialKey) ? workspace.materialKey : '';
+    reviewReturn = editorPages.includes(workspace?.reviewReturn) && workspace.reviewReturn !== 'review' ? workspace.reviewReturn : 'materials';
+    invalidUrls.clear();
+    for (const entry of Array.isArray(workspace?.invalid) ? workspace.invalid : []) {
+        if (!Array.isArray(entry)) continue;
+        const [key, text] = entry;
+        if (typeof key !== 'string' || typeof text !== 'string') continue;
+        const [position, layer] = key.split('/');
+        if (key === position + '/' + layer && Object.hasOwn(SECTIONS, position) && SECTIONS[position].fields.url &&
+            devices.includes(layer)) invalidUrls.set(key, text.slice(0, 2048));
+    }
+    menuEditor.restorePosition(workspace?.menu);
+    themeFlow = undefined;
+    const flow = workspace?.flow;
+    if (flow && themeSteps.some(([step]) => step === flow.step)) {
+        try {
+            themeFlow = {
+                id: draft.active, source: parseTemplate(flow.source), step: flow.step,
+                material: isMaterialPosition(flow.material) ? flow.material : '', fullMaterials: flow.fullMaterials === true,
+            };
+        } catch {
+            themeFlow = undefined;
+        }
+    }
+    aiGoal = typeof workspace?.aiGoal === 'string' ? workspace.aiGoal.slice(0, 2000) : '';
+    const ai = workspace?.ai;
+    if (ai && typeof ai.source === 'string' && ai.source.length <= 64 * 1024) {
+        let proposal = [];
+        try {
+            proposal = readLayoutProposal(JSON.stringify(ai.plan), SECTIONS);
+        } catch {
+            // The text remains available for another check.
+        }
+        const ids = new Set(proposal.map(field => lockId(field.device, field)));
+        aiSessions.set(draft.active, {
+            source: ai.source, proposal,
+            scope: devices.includes(ai.scope) ? ai.scope : 'all',
+            excluded: new Set(Array.isArray(ai.excluded) ? ai.excluded.filter(id => ids.has(id)) : []),
+        });
+    }
+}
+
+function resumeParkedDraft() {
+    if (status.dataset.dirty === 'true' || aiSessions.get(draft.active)?.source.trim() || aiGoal.trim()) {
+        return setMessage('当前还有未保存修改。保存或取消后，可继续暂存草稿。');
+    }
+    try {
+        if (parkedDraft.revision !== savedRevision) {
+            const source = parseTemplate(parkedDraft.layouts[parkedDraft.active]);
+            addTemplate({ ...source, name: availableCopyName(source.name, '暂存副本') }, () => { page = 'templates'; });
+            setMessage('当前模板已更新，暂存的主题已作为副本打开。');
+            return;
+        }
+        draft = {
+            ...restoreCheckpointSettings(saved, parkedDraft),
+            materialFavorites: cleanMaterialFavorites(parkedDraft.materialFavorites),
+            quickAccess: cleanQuickAccess(parkedDraft.quickAccess ?? saved.quickAccess, SECTIONS), ...sceneSettings(parkedDraft),
+        };
+    } catch (error) {
+        setMessage(error.message);
+        return;
+    }
+    resumedParkedId = parkedDraft.id;
+    resumeWorkspace(parkedDraft.workspace);
+    renderBody();
+    refreshPreview();
+    updateStatus();
+    setMessage('已恢复暂存草稿。');
+}
+
+function renderParkedDraft() {
+    if (!parkedDraft || resumedParkedId === parkedDraft.id) return;
+    const card = element('section', '', 'tle-edit-card');
+    const name = cleanName(parkedDraft.layouts[parkedDraft.active]?.name) || '上次主题';
+    const stale = parkedDraft.revision !== savedRevision;
+    const actions = element('div', '', 'tle-actions');
+    actions.append(
+        button(stale ? '另存暂存主题为副本' : '继续上次草稿', resumeParkedDraft),
+        button('删除暂存', async () => {
+            if (applying || !window.confirm('删除这份暂存草稿？')) return;
+            if (await persistEditorSettings(saved, savedRevision, undefined)) {
+                parkedDraft = undefined;
+                if (panel) {
+                    renderBody();
+                    setMessage('暂存草稿已删除。');
+                }
+            }
+        }),
+    );
+    card.append(element('h3', '有一份暂存草稿'), element('small', name), actions);
+    if (stale) card.append(element('small', '正式设置已变化。可将暂存的当前主题另存为副本。'));
+    return card;
+}
+
+function toggleWorkbench() {
+    if (photoPending()) return setMessage('正在处理照片，请稍候。');
+    if (page === 'workbench') {
+        page = workbenchReturn;
+        renderBody();
+        panel.querySelector('.tle-workbench-launch')?.focus({ preventScroll: true });
+        return;
+    }
+    workbenchReturn = page;
+    page = 'workbench';
+    setMessage('');
+    renderBody();
+    const focusTarget = matchMedia('(pointer: coarse)').matches
+        ? body.querySelector('.tle-workbench-title') : body.querySelector('.tle-workbench-query');
+    focusTarget?.focus({ preventScroll: true });
+}
+
+function openWorkbenchEntry(id) {
+    const [kind, target, area, field] = id.split('/');
+    if (kind === 'appearance') {
+        page = 'appearance';
+        chooseAppearance(target, area);
+        return;
+    }
+    if (kind === 'menu' || kind === 'item') {
+        jumpToReviewField(device, { menu: target }, { area, key: field }, kind === 'item' ? area : undefined);
+        return;
+    }
+    if (target === 'create') {
+        startThemeFlow();
+        return;
+    }
+    if (target === 'batch' || target === 'favorites') {
+        const flow = activeThemeFlow();
+        if (flow) flow.fullMaterials = true;
+        page = 'materials';
+        renderBody();
+        openMaterialShelf(target === 'batch' ? '.tle-material-batch' : '.tle-material-favorites');
+        return;
+    }
+    if (target === 'review' && workbenchReturn !== 'review') reviewReturn = workbenchReturn;
+    page = target;
+    setMessage('');
+    renderBody();
+}
+
+function workbenchEntries() {
+    const entries = [];
+    for (const [key, [title, keywords]] of Object.entries(WORKBENCH_ACTIONS)) {
+        entries.push({ id: 'action/' + key, title, context: '常用操作', keywords });
+    }
+    for (const [section, descriptor] of Object.entries(SECTIONS)) {
+        for (const [key, config] of Object.entries(descriptor.fields)) {
+            const words = [GROUPS[descriptor.group], config.unit];
+            if (section.startsWith('chatFrame')) words.push('消息边框 聊天四边');
+            if (descriptor.kind === 'message') words.push('气泡 对话气泡');
+            if (section === 'topPendant' && key.startsWith('offset')) words.push('挂件偏移 挂件移动');
+            const legacyMenu = section === 'optionsMenu' || section === 'wandMenu';
+            const context = descriptor.label + (legacyMenu ? ' · 旧版外观' : '');
+            const keywords = words.filter(Boolean).join(' ');
+            entries.push({ id: 'appearance/' + section + '/' + key, title: config.label, context, keywords, legacy: legacyMenu });
+        }
+    }
+    for (const [menu, name] of [...Object.entries(MENUS).map(([id, { label }]) => [id, label]), ['global', '全局菜单']]) {
+        for (const [area, keys] of Object.entries(MENU_STYLE_FIELDS)) {
+            for (const key of keys) {
+                entries.push({
+                    id: ['menu', menu, area, key].join('/'),
+                    title: menuReviewLabels[key],
+                    context: name + ' · ' + menuReviewLabels[area],
+                });
+            }
+        }
+        if (menu === 'global') continue;
+        const aliases = {
+            'id:attachFile': '附件 上传文件', 'id:manageAttachments': '数据银行 资料库 附件管理',
+            'id:show_gallery_wand_button': '相册 图库', 'id:option_toggle_AN': '作者注释 作者备注',
+        };
+        const view = menuView(current().menus, menu, device === 'mobile');
+        for (const item of nativeMenus.items(menu)) {
+            const display = view.items[item.key]?.label;
+            entries.push({
+                id: ['item', menu, item.key].join('/'),
+                title: display || item.label,
+                context: name + ' · 菜单项目',
+                keywords: [item.label, item.key, aliases[item.key], '改名 排序 置顶 图标 分组'].filter(Boolean).join(' '),
+            });
+        }
+    }
+    return entries;
+}
+
+function renderWorkbench() {
+    const card = element('section', '', 'tle-edit-card');
+    const search = element('input', '', 'text_pole tle-workbench-query');
+    search.type = 'search';
+    search.value = workbenchQuery;
+    search.placeholder = '例如：气泡 圆角、挂件偏移、魔杖菜单 背景';
+    search.setAttribute('aria-label', '搜索设置和操作');
+    const devicesRow = element('div', '', 'tle-segments');
+    devicesRow.setAttribute('role', 'group');
+    devicesRow.setAttribute('aria-label', '快速定位设备');
+    for (const [key, name] of [['desktop', '桌面'], ['mobile', '手机']]) {
+        const control = button(name, () => {
+            device = key;
+            renderBody();
+            body.querySelector('[aria-label="快速定位设备"] [aria-pressed="true"]')?.focus({ preventScroll: true });
+        });
+        control.setAttribute('aria-pressed', String(device === key));
+        devicesRow.append(control);
+    }
+    const title = element('h3', '快速定位', 'tle-workbench-title');
+    title.tabIndex = -1;
+    card.append(title, search, devicesRow);
+    const favorites = element('section', '', 'tle-edit-card');
+    const pinned = element('div', '', 'tle-workbench-list');
+    const pinnedHeading = element('h3', '我的常用');
+    const organize = button(organizeQuickAccess ? '完成整理' : '整理常用', () => {
+        organizeQuickAccess = !organizeQuickAccess;
+        organize.textContent = organizeQuickAccess ? '完成整理' : '整理常用';
+        renderLists();
+    });
+    favorites.append(pinnedHeading, organize, pinned);
+    organize.classList.add('tle-workbench-organize');
+    const matches = element('section', '', 'tle-edit-card');
+    const heading = element('h3');
+    const status = element('small');
+    status.setAttribute('aria-live', 'polite');
+    const results = element('div', '', 'tle-workbench-list tle-workbench-results');
+    matches.append(heading, status, results);
+    body.append(card, favorites, matches);
+
+    function renderEntry(entry, list, position) {
+        const label = entry.context + ' · ' + entry.title;
+        const row = element('div', '', 'tle-quick-row');
+        const title = button('', () => openWorkbenchEntry(entry.id), 'menu_button tle-quick-open');
+        title.setAttribute('aria-label', label);
+        title.disabled = entry.unavailable === true;
+        title.append(element('strong', entry.title), element('small', entry.context));
+        const present = draft.quickAccess.includes(entry.id);
+        const pin = button(present ? '移出常用' : '加入常用', () => {
+            draft.quickAccess = present ? draft.quickAccess.filter(id => id !== entry.id) : [...draft.quickAccess, entry.id];
+            updateStatus();
+            renderLists();
+            const equivalent = [...list.querySelectorAll('button[data-quick-pin]')].find(node => node.dataset.quickPin === entry.id);
+            (equivalent ?? (list === pinned ? organize : search)).focus({ preventScroll: true });
+        });
+        pin.setAttribute('aria-label', (present ? '移出常用' : '加入常用') + ' · ' + label);
+        pin.dataset.quickPin = entry.id;
+        row.append(title, pin);
+        if (organizeQuickAccess && position !== undefined) {
+            const order = element('div', '', 'tle-actions');
+            for (const [delta, text] of [[-1, '上移'], [1, '下移']]) {
+                const destination = position + delta;
+                const move = button(text, () => {
+                    [draft.quickAccess[position], draft.quickAccess[destination]] =
+                        [draft.quickAccess[destination], draft.quickAccess[position]];
+                    updateStatus();
+                    renderLists();
+                    [...pinned.querySelectorAll('button')].find(control =>
+                        control.getAttribute('aria-label') === text + ' · ' + label && !control.disabled)?.focus({ preventScroll: true });
+                });
+                move.setAttribute('aria-label', text + ' · ' + label);
+                move.disabled = destination < 0 || destination >= draft.quickAccess.length;
+                order.append(move);
+            }
+            row.append(order);
+        }
+        list.append(row);
+    }
+
+    function renderLists() {
+        const entries = workbenchEntries();
+        const byId = new Map(entries.map(entry => [entry.id, entry]));
+        pinned.replaceChildren();
+        if (!draft.quickAccess.length) pinned.append(element('small', '在结果旁点「加入常用」，保存修改后可跨模板使用。'));
+        for (const [index, id] of draft.quickAccess.entries()) {
+            const entry = byId.get(id) ?? { id, title: id.split('/').at(-1), context: '菜单项暂不可用', unavailable: true };
+            renderEntry(entry, pinned, index);
+        }
+        results.replaceChildren();
+        const searching = Boolean(workbenchQuery.trim());
+        const found = searching ? searchWorkbench(entries, workbenchQuery) : entries.slice(0, Object.keys(WORKBENCH_ACTIONS).length);
+        if (searching) favorites.before(matches);
+        else matches.before(favorites);
+        heading.textContent = searching ? '搜索结果' : '常用任务';
+        status.textContent = searching ? (found.length ? '匹配 ' + found.length + ' 项' : '没有找到匹配的设置') : '';
+        for (const entry of found.slice(0, 35)) renderEntry(entry, results);
+        if (found.length > 35) results.append(element('small', '继续输入可缩小搜索范围。'));
+    }
+
+    search.addEventListener('input', () => { workbenchQuery = search.value; renderLists(); });
+    search.addEventListener('keydown', event => {
+        const first = results.querySelector('.tle-quick-open:not(:disabled)');
+        if (event.isComposing || !first || !['Enter', 'ArrowDown'].includes(event.key)) return;
+        event.preventDefault();
+        if (event.key === 'Enter') first.click();
+        else first.focus();
+    });
+    renderLists();
 }
 
 function renderBody() {
+    refreshShareStatus = undefined;
+    refreshFlowMaterials = undefined;
     refreshMaterialShelf = undefined;
     refreshMaterialIndex = undefined;
+    refreshMaterialReplacement = undefined;
     const wasComparing = panel.dataset.aiOriginal;
     delete panel.dataset.aiStage;
     delete panel.dataset.aiOriginal;
@@ -1701,19 +2763,30 @@ function renderBody() {
         aiPreview = undefined;
         refreshPreview();
     }
-    const tabPage = ['ai', 'materials'].includes(page) ? 'appearance' : page;
+    const mainPage = page === 'workbench' ? workbenchReturn : page;
+    const tabPage = ['ai', 'materials'].includes(mainPage) ? 'appearance' : mainPage;
     for (const tab of panel.querySelectorAll('[data-section]')) tab.setAttribute('aria-pressed', String(tab.dataset.section === tabPage));
     body.replaceChildren();
     body.scrollTop = 0;
+    const flow = activeThemeFlow();
+    if (flow && themeSteps.some(([step]) => step === page)) renderThemeSteps(flow);
+    if (page === 'workbench') return renderWorkbench();
     if (page === 'review') return renderReview();
     if (page === 'ai') return renderAiLayout();
-    if (page === 'materials') return renderMaterials();
+    if (page === 'materials') {
+        if (flow && !flow.fullMaterials) return renderThemeMaterials(flow);
+        return renderMaterials();
+    }
     if (page === 'templates') {
         renderTemplates();
+        const checkpoint = renderParkedDraft();
+        if (checkpoint) body.prepend(checkpoint);
         return;
     }
     if (page === 'menus') {
         menuEditor.render(body, false, pickedMenu);
+        const checkpoint = renderParkedDraft();
+        if (checkpoint && !pickedMenu) body.prepend(checkpoint);
         pickedMenu = false;
         return;
     }
@@ -1814,6 +2887,7 @@ function pickElement(event) {
 
 function closeEditor() {
     setPicking(false);
+    clearPositionClipboard();
     editorViewport?.abort();
     editorViewport = undefined;
     panel?.remove();
@@ -1822,13 +2896,25 @@ function closeEditor() {
     importedParts = undefined;
     aiPreview = undefined;
     openingLayout = openingTemplateId = undefined;
+    themeFlow = refreshFlowMaterials = undefined;
+    refreshShareStatus = undefined;
+    resumedParkedId = undefined;
+    openReviewAreas.clear();
+    reviewSelection.clear();
+    reviewSelectionOwner = undefined;
+    workbenchQuery = '';
+    workbenchReturn = 'menus';
+    organizeQuickAccess = false;
+    reviewFilter = 'all';
+    reviewBatch = false;
     aiGoal = '';
     aiSessions.clear();
     materialKey = '';
     recentMaterials.clear();
     refreshMaterialShelf = undefined;
     refreshMaterialIndex = undefined;
-    Object.assign(materialIndex, { query: '', filter: 'all', open: false });
+    refreshMaterialReplacement = undefined;
+    Object.assign(materialIndex, { query: '', filter: 'all', imageFilter: 'all', mode: 'positions', open: false });
     partsSource = '';
     refreshPreview();
     (document.querySelector('#extensionsMenuButton') ?? menu?.firstElementChild)?.focus();
@@ -1837,6 +2923,7 @@ function closeEditor() {
 function openEditor(initial) {
     if (applying) return;
     if (panel) {
+        if (photoPending()) return setMessage('正在处理照片，请稍候。');
         if (initial === 'templates') {
             page = 'templates';
             renderBody();
@@ -1874,31 +2961,52 @@ function openEditor(initial) {
     message = element('div', '', 'tle-message');
     message.setAttribute('role', 'status');
     const actions = element('footer', '', 'tle-actions');
+    const cancel = button('取消', closeEditor);
     actions.append(
-        button('取消', closeEditor),
+        cancel,
+        button('暂存并关闭', parkCurrentDraft),
         button('保存修改', async () => {
             if (applying) return;
+            if (photoPending()) return setMessage('正在处理照片，请稍候。');
             if (aiPreview) return setMessage('请先接受所选排版或结束试套。');
             if (invalidUrls.size) return setMessage('请先修正或清空无效图片 URL。');
             const next = structuredClone(draft);
             if (next.auto && !next.manual && saved.templates[saved.active] && next.templates[saved.active]) next.active = saved.active;
-            saved = next;
-            sceneActive = undefined;
-            extension_settings[KEY] = saved;
-            applying = true;
-            closeEditor();
-            reconcileScene(true);
-            try {
-                await saveSettings();
-            } finally {
-                applying = false;
+            const changed = !equalSettings(next, saved);
+            const revision = changed ? templateId() : savedRevision;
+            const checkpoint = changed && resumedParkedId && resumedParkedId === parkedDraft?.id ? undefined : parkedDraft;
+            setMessage('正在保存修改…');
+            if (await persistEditorSettings(next, revision, checkpoint)) {
+                saved = next;
+                savedRevision = revision;
+                parkedDraft = checkpoint;
+                sceneActive = undefined;
+                closeEditor();
+                reconcileScene(true);
             }
         }, 'menu_button tle-primary'),
     );
+    panel.addEventListener('click', event => {
+        if (!photoPending() || cancel.contains(event.target) || !(event.target instanceof Element) ||
+            !event.target.closest('button, select, summary, input[type="checkbox"]')) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        setMessage('正在处理照片，请稍候。');
+    }, true);
     panel.addEventListener('focusout', event => {
         if (history?.field === event.target) history.field = null;
     });
     panel.addEventListener('keydown', event => {
+        if (photoPending() && !['Tab', 'Escape'].includes(event.key) && event.target !== cancel) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+        }
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+            event.preventDefault();
+            toggleWorkbench();
+            return;
+        }
         if ((event.ctrlKey || event.metaKey) && !event.target.matches('input,textarea,[contenteditable]')) {
             const key = event.key.toLowerCase();
             if (key === 'z' || key === 'y') {
@@ -1911,6 +3019,7 @@ function openEditor(initial) {
             event.stopPropagation();
             if (panel.dataset.aiStage) panel.querySelector('.tle-ai-return').click();
             else if (picking) setPicking(false);
+            else if (page === 'workbench') toggleWorkbench();
             else closeEditor();
         }
     });
@@ -1920,7 +3029,9 @@ function openEditor(initial) {
     }, 'menu_button tle-pick');
     const header = element('header', '', 'tle-ui-header');
     const titleRow = element('div', '', 'tle-title-row');
-    titleRow.append(heading, status);
+    const quick = button('快速定位', toggleWorkbench, 'menu_button tle-workbench-launch');
+    quick.setAttribute('aria-keyshortcuts', 'Control+K Meta+K');
+    titleRow.append(heading, status, quick);
     const shortcuts = element('div', '', 'tle-ui-shortcuts');
     const historyControls = element('div', '', 'tle-history-controls');
     const undo = button('撤销', () => stepHistory(-1));
@@ -1983,7 +3094,7 @@ function mount() {
     if (menu || !ready) return;
     const parent = document.getElementById('extensionsMenu');
     if (!parent) return;
-    saved = readSettings();
+    loadEditorSettings();
     menu = element('div', '', 'list-group-item');
     const launcher = button(TITLE, openEditor, 'flex-container flexGap5');
     launcher.id = menuId;
@@ -2006,7 +3117,7 @@ function onReady() {
 
 function onSettings() {
     if (!menu) return;
-    saved = readSettings();
+    loadEditorSettings();
     sceneActive = undefined;
     if (panel) closeEditor();
     reconcileScene(true);
